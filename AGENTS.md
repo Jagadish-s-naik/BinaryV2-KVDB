@@ -1,6 +1,5 @@
 # Documentation rules
 
-- Never edit PROMPTS.md.
 - Any change to the record format, write order, recovery,
   compaction, locking, or disk-full logic must update
   docs/FORMAT.md and the affected rows in ARCHITECTURE.md

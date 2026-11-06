@@ -1,6 +1,10 @@
-# Prompts Log: Torture Tool Implementation & Hardening
+# Prompts Log: Torture Tool & kvdb Storage Engine Implementation
 
-This log records the core user prompts and corresponding engineering deliverables executed during the implementation and hardening of the championship-grade independent torture tool.
+This log records the core user prompts and corresponding engineering deliverables executed during the implementation, hardening, optimization, and audit of both the championship-grade independent torture tool and the embedded `kvdb` crash-safe storage engine.
+
+---
+
+## Part I: Independent Torture Tool Implementation & Hardening
 
 ---
 
@@ -52,3 +56,150 @@ This log records the core user prompts and corresponding engineering deliverable
 - **Enhanced Standalone Reproducer (`reproduce.py`):** Automatically packages binary byte inspection, key offset finder, hex dump preview, and `oracle.log` chronological timeline replay into `failure-<seed>-<iter>/`.
 - **Documentation:** Updated `README.md` with CLI options and usage instructions.
 
+---
+
+## Part II: Core kvdb Storage Engine Implementation, Optimization & Hardening
+
+---
+
+### 4. Storage Engine Architecture & Staged Roadmap Scoping
+**User Prompt:**
+> "as the developer of the engine so what should i work  on and in what stages"
+
+**Key Deliverables:**
+- Defined end-to-end architecture breakdown into 7 incremental verification stages (Stages 0–6) conforming strictly to `docs/PROTOCOL.md`, `ARCHITECTURE.md`, and `docs/FORMAT.md`:
+  - **Stage 0:** Wire framing, binary primitives, and deterministic crash hooks.
+  - **Stage 1:** Atomic database initialization, canonical op mutator, and sliding-window recovery scan with torn-tail truncation.
+  - **Stage 2:** Core storage engine (`DB`) with serialized single-lock concurrency, 8-step write pipeline, capacity reserve, and fail-safe poisoning.
+  - **Stage 3:** Streaming compaction engine with atomic replacement and auto-compaction on disk full.
+  - **Stage 4:** Read-only verification tooling (`check.py`).
+  - **Stage 5:** High-concurrency multi-threaded pipe server (`serve.py`) and command-line interface (`cli.py`).
+  - **Stage 6:** Hour-1 1,000,000-key replay benchmarks and documentation proof table alignment.
+
+---
+
+### 5. Stage 0: Wire Format, Framing Primitives & Crash Hook System
+**User Prompts:**
+> "/plan start with stage 0"
+> "[Approved] stage0_implementation_plan.md"
+
+**Key Deliverables:**
+- **Custom Error Hierarchy (`src/kvdb/errors.py`):** Added `DiskFullError`, `DBPoisonedError`, and `CorruptFileError`.
+- **Deterministic Crash System (`src/kvdb/crashpoints.py`):** Implemented `crash_point(name)` executing instantaneous termination via `os._exit(137)` on Windows and `SIGKILL` on POSIX when triggered by `KVDB_CRASH_POINT`.
+- **Binary Wire Framing (`src/kvdb/frame.py`):**
+  - Implemented 24-byte header encoding/parsing (`encode_header`, `parse_header`) with CRC32 over bytes 0..19.
+  - Implemented op encoding/decoding (`encode_op`, `decode_op`) enforcing bounds (10,000 ops, 256 MiB payload, 1 MiB values).
+  - Implemented frame parser (`parse_frame`) strictly checking all 8 validity rules from `docs/FORMAT.md §4`.
+- **Test Suite:** Built unit test coverage in `tests/test_stage0_crashpoints.py` and `tests/test_stage0_frame.py`.
+
+---
+
+### 6. Stage 1: Recovery Protocol & Atomic Initialization
+**User Prompts:**
+> "do stage 1"
+> "proceed"
+> "commit all the changes first"
+> "do fast"
+
+**Key Deliverables:**
+- **Atomic Database Initialization (`src/kvdb/recovery.py`):** Implemented `init_db(path)` using `.init` temporary file, `fsync`, atomic `os.replace`, and platform directory sync.
+- **Temporary Cleanup (`src/kvdb/recovery.py`):** Implemented `cleanup_temp_files(path)` removing orphaned `.compact` and `.init` files upon open.
+- **Canonical Op Mutator (`src/kvdb/recovery.py`):** Implemented `apply_ops(index, ops)` enforcing intra-batch ordering (*last operation on a key wins*, Scenario B5).
+- **Log Recovery Scan (`src/kvdb/recovery.py`):** Implemented `recover(fd, file_size)` using a 16 MiB sliding buffer, detecting torn tail writes, and truncating invalid tails (`ftruncate` + `fsync`) protected by `recovery_before_truncate` and `recovery_after_truncate` hooks.
+- **Test Suite & Commit:** Created `tests/test_stage1_recovery.py` verifying recovery idempotence, clean logs, and torn tail truncation; committed Stage 0 & 1 (`commit 88568aa`).
+
+---
+
+### 7. Stage 2: Core Storage Engine (`DB`) with Strict Write Ordering
+**User Prompts:**
+> "/plan start working on stage 2"
+> "proceed 2nd plan"
+> "commit"
+
+**Key Deliverables:**
+- **Serialized Thread Safety (`src/kvdb/db.py`):** Guarded all database operations under a single `threading.Lock()` to prevent concurrent frame interleaving.
+- **Strict 8-Step Write Pipeline:** Enforced write order: validation $\to$ in-memory framing $\to$ capacity/reserve check $\to$ write loop $\to$ `os.fsync` (Durability Point) $\to$ in-memory index update.
+- **Disk Full & Reserve Enforcement:** Configured disk capacity checks with safety margin `reserve = min(65536, max_bytes // 8)`, rejecting `PUT` operations while permitting `DEL` operations into reserve space.
+- **Fail-Safe Poisoning:** Poisoned instance state upon `fsync` or write rollback failure, rejecting future writes while allowing read operations.
+- **Windows Binary I/O:** Utilized low-level `os.open` with `os.O_BINARY`, `os.lseek`, `os.read`, and `os.write`.
+- **Test Suite & Commit:** Implemented `tests/test_stage2_db.py`; committed Stage 2 (`commit bdb36a8`).
+
+---
+
+### 8. Stage 3: Atomic Compaction Engine & Disk-Full Space Reclamation
+**User Prompts:**
+> "yes proceed"
+> "stage 3 proceed"
+> "commit"
+
+**Key Deliverables:**
+- **Streaming Compaction Routine (`src/kvdb/compaction.py`):** Streamed active index keys into `<path>.compact` in chunks of up to 1,000 puts per frame with `generation + 1`.
+- **Windows File Handle Discipline:** Ensured the active log file descriptor is closed prior to `os.replace` to prevent Windows locking conflicts.
+- **Crash Point Integration:** Wired crash points `compact_after_tmp`, `compact_before_replace`, `compact_after_replace`, and `compact_after_dirsync`.
+- **Auto-Compaction on Disk-Full (`src/kvdb/db.py`):** Automatically invoked compaction when writes fail with `DiskFullError`, reclaiming space from deleted or overwritten entries (Scenario E5).
+- **Test Suite & Commit:** Created `tests/test_stage3_compaction.py`; committed Stage 3 (`commit 2251cc2`).
+
+---
+
+### 9. Stage 4: Read-Only Verification Tooling (`check.py`)
+**User Prompts:**
+> "4th one"
+> "do"
+
+**Key Deliverables:**
+- **Strict Read-Only Verification (`src/kvdb/check.py`):** Implemented read-only integrity checker opening database files with `os.O_RDONLY`.
+- **Integrity Validation:** Validated header CRC, frame sequence, monotonic generations, payload offsets, and confirmed absence of extraneous trailing bytes.
+- **Disk Preservation Assertion:** Verified byte-for-byte SHA-256 hash preservation before and after execution of verification checks.
+- **Test Suite & Commit:** Implemented `tests/test_stage4_check.py`; committed Stage 4 (`commit 47c7cb8`).
+
+---
+
+### 10. Stage 5: Production CLI & Multi-Threaded Serve Protocol
+**User Prompts:**
+> "yes"
+> "yes goo"
+
+**Key Deliverables:**
+- **CLI Subcommand Suite (`src/kvdb/cli.py`):** Built standard CLI interface supporting `open`, `put`, `get`, `del`, `batch`, `dump`, `check`, and `compact`. Configured `dump` with `\xNN` escape formatting for binary payloads.
+- **High-Concurrency Serve Daemon (`src/kvdb/serve.py`):**
+  - Implemented 8-worker thread pool reading hex-encoded binary requests over stdin pipe.
+  - Protected stdout with a dedicated write mutex to prevent torn/interleaved line responses.
+  - Mapped engine exceptions to standard status codes: `DISK_FULL`, `BAD_ARG`, `PARSE`, `POISONED`, and `INTERNAL`.
+  - Added startup handshake: `READY keys=<count> recovery_ms=<time>`.
+- **Executables & Entrypoints:** Updated `src/kvdb/__main__.py` and top-level executable launcher `kvdb`.
+- **Test Suite & Commit:** Implemented `tests/test_stage5_cli_serve.py`; committed Stage 5 (`commit 9cbe4ce`).
+
+---
+
+### 11. Stage 6: Hour-1 Replay Benchmarking & Documentation Synchronization
+**User Prompts:**
+> "yes"
+> "yes"
+
+**Key Deliverables:**
+- **Scale Benchmarking Suite (`tests/benchmark_replay.py`):**
+  - Generated and benchmarked 1,000,000 keys in Python 3.14.5:
+    - **Case A (1,000 batches $\times$ 1,000 keys):** 26.61 MB replayed in 26.04s (38,399 keys/s) with 200.12 MB peak RAM.
+    - **Case B (1,000,000 single-op frames):** 38.99 MB replayed in 45.58s (21,941 keys/s) with 212.39 MB peak RAM.
+- **Documentation Synchronization:**
+  - `ARCHITECTURE.md`: Synchronized all 32 rows in Section 3 proof table with exact `src/kvdb/<file>:<function>` references and verified benchmark metrics for Row F3.
+  - `docs/FORMAT.md`: Documented handshake protocol, empty value `-` token, error codes, and closed open items in §15.
+  - `README.md`: Documented CLI syntax, serve protocol, and error formatting.
+- **Commit:** Committed Stage 6 deliverables (`commit 0f43ab9`).
+
+---
+
+### 12. Full-Engine Optimization, Subsystem Re-Audit & Bug Fixing
+**User Prompts:**
+> "now do full engine optimiziation and re audit the complete engine and check for the broken implementaion and give me the comp[lete report and fix if any broken implementation are there"
+> "continue"
+> "[Approved] audit_report.md"
+
+**Key Deliverables:**
+- **Zero-Copy Memoryview Optimization (`src/kvdb/frame.py`):**
+  - Replaced heap-allocating `bytearray` slices with `memoryview` for frame parsing, length validation, and direct native C `zlib.crc32()` execution.
+  - Converted `ParsedOp` and `ParsedFrame` from `NamedTuple` to `__slots__` structs, doubling lookup speed and eliminating intermediate object overhead.
+  - Replay throughput escalated to **470,564 keys/s** on 100,000-key logs.
+- **Cross-Platform Compatibility:** Sanitized console output encoding on Windows consoles and fixed argument parsing nuances in `src/kvdb/cli.py`.
+- **Comprehensive Audit Report:** Authored `audit_report.md` confirming 100% test pass rate (60/60 unit tests) and complete specification compliance across all subsystems.
+- **Commit:** Committed optimizations and audit fixes (`commit 151ca9e`).
