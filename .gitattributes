@@ -1,0 +1,7 @@
+# Force LF line endings for all text files so Windows checkout does not inject \r\n
+* text=auto eol=lf
+
+# Executable entrypoints
+kvdb text eol=lf
+torture text eol=lf
+
