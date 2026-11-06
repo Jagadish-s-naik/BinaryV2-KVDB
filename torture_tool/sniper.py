@@ -125,3 +125,4 @@ class SniperCalibrator:
             "avg_us": avg_us,
             "total_strikes": sum(self._strike_counts.values()),
         }
+
