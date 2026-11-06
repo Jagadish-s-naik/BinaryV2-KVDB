@@ -1,0 +1,54 @@
+name: kvdb CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }} (Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.13", "3.14"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          check-latest: true
+
+      - name: Verify Toolchain
+        run: |
+          python --version
+
+      - name: Check Syntax Compilation
+        run: |
+          python -m compileall src/ torture_tool/ tests/ tools/
+
+      - name: Run Unit & Fuzz Test Suite
+        run: |
+          python -m unittest discover tests -v
+
+      - name: Run Judge Self-Tests (16 Scenarios)
+        run: |
+          python torture --self-test
+
+      - name: Run Fast Torture Mode Verification
+        run: |
+          python torture --seed 42 --iterations 5 --mode contention
+          python torture --seed 7  --iterations 3 --mode recovery-crash
+          python torture --seed 99 --iterations 3 --mode large-batches
+
+      - name: Verify Diagnostic CLI Tools
+        run: |
+          python tools/inspect_wal.py --help
+

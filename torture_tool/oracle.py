@@ -404,9 +404,9 @@ class Oracle:
         return CheckResult(passed=True)
 
 
-def validate_raw_binary_db(db_path: Path, strict_magic: bool = False) -> tuple[bool, str]:
+def validate_raw_binary_db(db_path: Path | str, strict_magic: bool = False) -> tuple[bool, str]:
     """Independent binary format & frame auditor per FORMAT.md.
-    
+
     Validates:
     - 24-byte header: magic 'KVDBLOG\\0', version 1, generation >= 1, header_crc.
     - Sequential frames from offset 24 to EOF.
@@ -414,6 +414,7 @@ def validate_raw_binary_db(db_path: Path, strict_magic: bool = False) -> tuple[b
     - Payload structure: kind == 1, op_count uint32, each op well-formed.
     - Zero trailing junk: file must end exactly at the end of the last valid frame.
     """
+    db_path = Path(db_path) if isinstance(db_path, str) else db_path
     if not db_path.exists():
         return False, f"File does not exist: {db_path}"
 

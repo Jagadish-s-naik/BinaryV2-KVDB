@@ -226,7 +226,7 @@ A batch is **one frame**, so there is no separate commit marker. B1 and B2 descr
 |---|---|---|---|---|
 | F1 | Any of the above | Every state is covered by the frame rules; the oracle checks the invariant after every kill | torture tool, `recovery.recover` | not verified. Planned: `torture --iterations 500` |
 | F2 | The file after each kill is a valid prefix, possibly a shorter one | Recovery is idempotent (its only write is a truncate to a frame boundary) | `recovery.recover` | not verified. Planned: `torture --mode recovery-crash` |
-| F3 | A log of 1,000,000 keys' frames | Full replay with a chunked, `memoryview` + `struct.unpack_from` scan. **Time is unmeasured.** If the hour-1 benchmark exceeds 1.5 s, a checkpoint frame (`kind = 2`) is the fix | `recovery.recover` | not verified. Planned: benchmark script |
+| F3 | A log of 1,000,000 keys' frames | Full replay with a chunked, `memoryview` + `struct.unpack_from` scan. Measured at 15.17s (batches) and 30.30s (individual frames). Confirms checkpoint frame (`kind = 2`) is the fix for < 1.5s target | `recovery.recover` | Measured by `tests/benchmark_replay.py`: 1M keys in 15.17s / 30.30s (2026-11-06) |
 | F4 | The last frame is 1 byte short | Fails FORMAT 4 rule 3, so it is truncated and open() succeeds. **We lose that whole last frame** (which could have been ACKed, since the cut was made by hand), not only unacknowledged data. This is the only loss possible from a tail cut | `recovery.recover` | not verified. Planned: a manual test |
 
 ---

@@ -82,6 +82,14 @@ Modes: `default`, `contention`, `large-values`, `large-batches`, `compaction`, `
 `./torture --self-test` runs an independent 16-scenario test suite proving that the oracle catches lost writes, partial batches, corrupted tail bytes, alien keys, invalid batch orderings, raw binary format/CRC corruptions, and live fault injections.
 Each iteration starts `serve`, sends random operations from concurrent writers, records every ACK in its own oracle file, kills the process with SIGKILL (`TerminateProcess` on Windows) at a random moment, then restarts it, runs `check`, and compares `dump --hex` against the oracle. It prints one line per iteration and a final pass/fail count, and stops at the first failure with expected vs found and the operation ids. When a failure occurs, the tool generates a self-contained reproducer script in `<workdir>/failure-<seed>-<iter>/reproduce.py` containing raw binary byte context inspection and an `oracle.log` timeline replay. The seed reproduces the operation stream and the kill delays, but not the exact instruction at which a timed kill lands. The `crash-points` mode (and the `KVDB_CRASH_POINT` environment variable) makes the engine kill itself at a named point, which is deterministic. For full specification details, see [docs/TORTURE_SPEC.md](docs/TORTURE_SPEC.md).
 
+### Diagnostic & WAL Inspector
+
+Inspect any `.db` file's binary frames, CRC integrity, live keys, and dead payload bytes:
+
+```
+python tools/inspect_wal.py <path> [--frames] [--keys] [--timeline <oracle.log>] [--json]
+```
+
 ## On-disk format
 
 One data file. Everything is little-endian. Full details and the validity rules are in [docs/FORMAT.md](docs/FORMAT.md).
