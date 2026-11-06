@@ -54,6 +54,7 @@ class ModeConfig:
     is_crash_point_mode: bool = False
     is_recovery_crash_mode: bool = False
     is_scale_mode: bool = False
+    is_fault_injection_mode: bool = False
 
 
 def get_mode_config(mode_name: str, base_writers: int = 2) -> ModeConfig:
@@ -101,6 +102,12 @@ def get_mode_config(mode_name: str, base_writers: int = 2) -> ModeConfig:
             shared_key_count=2,
             kill_min_ms=5,
             kill_max_ms=400,
+        )
+    elif m == "fuzz-corrupt":
+        return ModeConfig(
+            name="fuzz-corrupt",
+            writers=max(2, base_writers),
+            is_fault_injection_mode=True,
         )
     else:
         raise ValueError(f"Unknown torture mode: {mode_name}")

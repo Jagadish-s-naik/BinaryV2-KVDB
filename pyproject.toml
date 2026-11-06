@@ -1,0 +1,6 @@
+[tool.pyrefly]
+search-path = ["src"]
+
+[tool.pyright]
+extraPaths = ["src"]
+

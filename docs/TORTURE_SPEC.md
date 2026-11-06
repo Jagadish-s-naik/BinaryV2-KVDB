@@ -28,7 +28,7 @@ After a kill and a restart:
 ```
 ./torture [--self-test]
 ./torture --seed S [--iterations N] [--mode M] [--workdir DIR] [--writers W] [--inflight K]
-          [--kill-min-ms A] [--kill-max-ms B] [--kvdb PATH]
+          [--kill-min-ms A] [--kill-max-ms B] [--ui {auto,live,plain}] [--fuzz-corrupt] [--kvdb PATH]
 ```
 
 | Flag | Default | Meaning |
@@ -36,11 +36,13 @@ After a kill and a restart:
 | `--self-test` | `false` | Run 16-scenario independent self-test suite verifying the tool against all §10 failure modes, binary format corruptions, and live fault injections in ~6s (no `--seed` required) |
 | `--seed` | **required** | Master seed (unless `--self-test` is given) |
 | `--iterations` | 500 | Number of kill/restart cycles |
-| `--mode` | `default` | `default`, `contention`, `large-values`, `large-batches`, `compaction`, `recovery-crash`, `disk-full`, `crash-points`, `scale` |
+| `--mode` | `default` | `default`, `contention`, `large-values`, `large-batches`, `compaction`, `recovery-crash`, `disk-full`, `crash-points`, `scale`, `fuzz-corrupt` |
 | `--workdir` | `./torture-work` | Must be on a real disk, **not tmpfs or a RAM disk** |
 | `--writers` | 2 (minimum 2) | Concurrent writer threads (defaults to mode-optimal count, e.g. 4 for `contention`) |
 | `--inflight` | 16 | Max unanswered commands per writer |
 | `--kill-min-ms`, `--kill-max-ms` | 5, 600 | Kill delay range |
+| `--ui` | `auto` | Terminal UI mode: `auto` (interactive live HUD on TTY), `live` (force ANSI dashboard), or `plain` (clean 1-line stream for CI) |
+| `--fuzz-corrupt` | `false` | Actively inject hardware-level storage faults (torn 4KB sectors, bit-rot, null holes) at EOF across iterations |
 | `--kvdb` | `<repo>/kvdb` | The engine launcher; run as `[sys.executable, kvdb, ...]` |
 
 Exit codes: **0** all iterations passed, **1** an invariant violation was found, **2** the tool itself or the environment failed (bad flags, the engine did not start, etc.), **130** cleanly interrupted by user (`Ctrl+C`). Never report a tool crash as a database failure or the reverse.

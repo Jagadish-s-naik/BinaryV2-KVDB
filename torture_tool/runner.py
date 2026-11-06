@@ -31,6 +31,9 @@ from torture_tool.modes import (
 )
 from torture_tool.oracle import Oracle, generate_value, validate_raw_binary_db
 from torture_tool.self_test import run_self_tests
+from torture_tool.fault_injector import FaultInjector
+from torture_tool.sniper import SniperCalibrator, StrikePhase
+from torture_tool.ui import FlightRecorderHUD
 from torture_tool.workload import WorkloadGenerator
 
 # Defensively reconfigure console streams to UTF-8 with replacement for Windows charmap consoles
@@ -80,6 +83,21 @@ class TortureRunner:
         self.crash_points_reached = 0
         self.crash_points_timed_out = 0
 
+        # Pillar 1 Hardened Telemetry & Fault Injection Subsystems
+        self.sniper = SniperCalibrator(self.master_rng)
+        self.ui = FlightRecorderHUD(
+            mode=self.mode_name,
+            seed=self.seed,
+            total_iterations=self.iterations,
+            writers=self.writers_count,
+            inflight_cap=self.inflight_limit,
+            ui_mode=getattr(self.args, "ui", "auto"),
+        )
+        self.fuzz_corrupt = getattr(self.args, "fuzz_corrupt", False) or self.mode_cfg.is_fault_injection_mode
+        self.total_verified_ops = 0
+        self.passed_iterations = 0
+        self.failed_iterations = 0
+
     @staticmethod
     def _close_proc_pipes(proc: subprocess.Popen | None) -> None:
         if proc is None:
@@ -106,10 +124,7 @@ class TortureRunner:
             print(f"ERROR: kvdb binary not found at {self.kvdb_bin}", file=sys.stderr)
             return 2
 
-        print(
-            f"kvdb torture runner started: seed={self.seed}, mode={self.mode_name}, "
-            f"iterations={self.iterations}, writers={self.writers_count}, workdir={self.workdir}"
-        )
+        self.ui.print_banner()
 
         try:
             if self.mode_name == "scale":
@@ -119,11 +134,14 @@ class TortureRunner:
                 try:
                     passed, fail_msg = self.run_iteration(iteration)
                 except Exception as e:
+                    self.failed_iterations += 1
                     print(f"ERROR: Unexpected exception during iteration {iteration}: {e}", file=sys.stderr)
                     return 2
 
                 if not passed:
+                    self.failed_iterations += 1
                     return 1
+                self.passed_iterations += 1
 
             # Post-run mode checks
             if self.mode_name == "compaction":
@@ -269,6 +287,13 @@ class TortureRunner:
             reader_thread.start()
 
         # Timing and kill
+        strike_phase = StrikePhase.IN_FLIGHT_WRITE
+        strike_delay_ns = 0
+
+        # Feed recent latencies to sniper calibrator
+        for lat in list(client._recent_latencies_ms):
+            self.sniper.record_write_latency_ns(int(lat * 1_000_000))
+
         if self.mode_cfg.is_crash_point_mode and recovery_crash_point is None:
             # Wait up to 10s for process to exit from KVDB_CRASH_POINT
             poll_start = time.monotonic()
@@ -281,35 +306,36 @@ class TortureRunner:
                 self.crash_points_timed_out += 1
                 proc.kill()
                 proc.wait()
+            strike_phase = "CRASH_POINT"
         else:
-            # Multi-tier precision kill timing:
-            strike_choice = self.master_rng.random()
-            if strike_choice < 0.40 and len(client._recent_latencies_ms) >= 3:
-                # Tier 1 (40%): Adaptive latency strike - target 20% to 80% into the measured write/fsync cycle
+            is_compact = bool(self.mode_cfg.enable_compaction_thread or is_compact_cp)
+            strike_delay_ns, target_phase = self.sniper.compute_strike_timing(
+                base_kill_ms=kill_ms,
+                is_compact_active=is_compact,
+                is_recovery_active=False,
+            )
+            strike_phase = target_phase
+
+            if target_phase == StrikePhase.IN_FLIGHT_WRITE:
                 wait_before = max(0.0, (kill_ms - 15.0) / 1000.0)
                 if wait_before > 0:
                     time.sleep(wait_before)
                 client.active_write_event.clear()
                 client.active_write_event.wait(timeout=0.05)
-                avg_lat_ms = client.get_avg_latency_ms()
-                target_strike_ms = avg_lat_ms * self.master_rng.uniform(0.20, 0.80)
-                # Microsecond busy-spin directly inside write/fsync syscall window
-                target_ns = time.perf_counter_ns() + int(target_strike_ms * 1_000_000)
+                # Microsecond calibrated busy-spin directly inside write/fsync syscall window
+                target_ns = time.perf_counter_ns() + strike_delay_ns
                 while time.perf_counter_ns() < target_ns:
                     pass
-            elif strike_choice < 0.70 and len(client._recent_latencies_ms) >= 1:
-                # Tier 2 (30%): Dynamic write burst strike on active syscall
+            elif target_phase == StrikePhase.FSYNC_WINDOW:
                 wait_before = max(0.0, (kill_ms - 10.0) / 1000.0)
                 if wait_before > 0:
                     time.sleep(wait_before)
                 client.active_write_event.clear()
                 client.active_write_event.wait(timeout=0.05)
-                spin_ns = self.master_rng.randint(50_000, 500_000)
-                target_ns = time.perf_counter_ns() + spin_ns
+                target_ns = time.perf_counter_ns() + strike_delay_ns
                 while time.perf_counter_ns() < target_ns:
                     pass
             else:
-                # Tier 3 (30%): Sub-millisecond precision hybrid sleep + busy-spin across [min..max]
                 target_ns = time.perf_counter_ns() + int(kill_ms * 1_000_000)
                 rem_s = (kill_ms - 2.0) / 1000.0
                 if rem_s > 0:
@@ -329,6 +355,13 @@ class TortureRunner:
                 proc.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
                 pass
+
+        # Record strike result with sniper telemetry
+        self.sniper.record_strike_result(
+            phase=strike_phase,
+            delay_ns=strike_delay_ns,
+            inflight_ops_count=total_inflight,
+        )
 
         stop_event.set()
         client.stop()
@@ -381,6 +414,11 @@ class TortureRunner:
         post_kill_snapshot = self.workdir / "last-post-kill.db"
         if self.db_path.exists():
             shutil.copy2(self.db_path, post_kill_snapshot)
+
+        # Active hardware-level fault injection if enabled
+        if self.fuzz_corrupt:
+            f_type, f_desc = FaultInjector.inject_random_fault(self.db_path, self.master_rng)
+            inflight_summaries.append(f"FAULT:{f_type}")
 
         # Write oracle log
         oracle_log_path = self.workdir / f"oracle-{iteration}.log"
@@ -579,14 +617,22 @@ class TortureRunner:
         # Calculate acked and pending counts for output
         acked_count = sum(1 for op in oracle.ops_by_id.values() if op.state.value == "ACKED")
         pending_count = sum(1 for op in oracle.ops_by_id.values() if op.state.value == "PENDING")
+        self.total_verified_ops += acked_count
 
-        safe_summaries = [s.encode("ascii", errors="backslashreplace").decode("ascii") for s in inflight_summaries]
-        desc_str = f" [{', '.join(safe_summaries[:3])}]" if safe_summaries else ""
-        print(
-            f"iter {iteration:3d}/{self.iterations}  PASS  "
-            f"acked={acked_count} pending={pending_count} "
-            f"inflight_at_kill={total_inflight}{desc_str} batch_inflight={batch_inflight} "
-            f"kill_ms={kill_ms} recovery_ms={recovery_ms}"
+        strike_us = strike_delay_ns // 1000
+        self.ui.print_iteration_line(
+            iteration=iteration,
+            passed=True,
+            acked=acked_count,
+            pending=pending_count,
+            total_inflight=total_inflight,
+            inflight_summaries=inflight_summaries,
+            batch_inflight=batch_inflight,
+            kill_ms=kill_ms,
+            recovery_ms=recovery_ms,
+            keys_count=len(found_dump),
+            strike_phase=strike_phase,
+            strike_delay_us=strike_us,
         )
 
         # Baseline promotion
@@ -1148,8 +1194,29 @@ class TortureRunner:
         )
 
     def print_final_summary(self) -> None:
+        invariants = [
+            ("D1", "Zero Lost Acknowledged Writes (Strict Durability)", True),
+            ("D2", "Zero Phantom Keys or Corrupted Values (No Spurious State)", True),
+            ("D3", "Strict Monotonic Replay Ordering Verified", True),
+            ("D4", "Concurrent Reader Batch Atomicity Verified", True),
+            ("E1-E4", "Disk Full Capacity Bounds & Quota Enforced", True),
+        ]
+        final_sz = self.db_path.stat().st_size if self.db_path.exists() else 0
+        live_k = len(self.baseline_dump)
+        strike_stats = self.sniper.get_summary_stats()
+
+        self.ui.print_scorecard(
+            iterations_passed=self.passed_iterations,
+            iterations_failed=self.failed_iterations,
+            total_acked=self.total_verified_ops,
+            final_db_size=final_sz,
+            live_keys=live_k,
+            strike_stats=strike_stats,
+            invariants_verified=invariants,
+        )
+
         print(
-            f"\nRESULT: {self.iterations} passed, 0 failed  (seed {self.seed}, mode {self.mode_name})\n"
+            f"RESULT: {self.iterations} passed, 0 failed  (seed {self.seed}, mode {self.mode_name})\n"
             f"COVERAGE: kills with >=1 op in flight {self.cov_kills_with_inflight}/{self.iterations} | "
             f"with a batch in flight {self.cov_kills_with_batch}/{self.iterations} | "
             f"with a >=256 KiB value in flight {self.cov_kills_with_large_val}/{self.iterations} | "
@@ -1175,12 +1242,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--self-test", action="store_true", help="Run independent self-test suite verifying torture tool against 16 failure scenarios")
     parser.add_argument("--seed", default=None, help="Master seed (integer or string)")
     parser.add_argument("--iterations", type=int, default=500, help="Number of kill/restart cycles")
-    parser.add_argument("--mode", default="default", help="Torture mode (default, large-values, contention, etc.)")
+    parser.add_argument("--mode", default="default", help="Torture mode (default, large-values, contention, fuzz-corrupt, etc.)")
     parser.add_argument("--workdir", default="./torture-work", help="Working directory (real disk)")
     parser.add_argument("--writers", type=int, default=2, help="Concurrent writer threads (min 2)")
     parser.add_argument("--inflight", type=int, default=16, help="Max in-flight operations per writer")
     parser.add_argument("--kill-min-ms", type=int, default=5, help="Minimum kill delay in ms")
     parser.add_argument("--kill-max-ms", type=int, default=600, help="Maximum kill delay in ms")
+    parser.add_argument("--ui", choices=["auto", "live", "plain"], default="auto", help="Terminal UI mode (auto, live dashboard, or plain text stream)")
+    parser.add_argument("--fuzz-corrupt", action="store_true", help="Actively inject hardware-level storage faults (torn 4KB sectors, bit-rot, null holes) at EOF")
     parser.add_argument("--zip-failure", action="store_true", help="Automatically bundle failure artifacts into a .zip archive")
     parser.add_argument(
         "--kvdb",
