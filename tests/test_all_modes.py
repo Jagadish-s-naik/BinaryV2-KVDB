@@ -26,13 +26,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+REAL_ENGINE = REPO_ROOT / "kvdb"
 FAKE_ENGINE = REPO_ROOT / "tests" / "fake_engine.py"
 
 
 class TestAllTortureModes(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        assert FAKE_ENGINE.exists(), f"fake_engine not found at {FAKE_ENGINE}"
+        target = Path(os.environ.get("KVDB_BIN", str(REAL_ENGINE)))
+        assert target.exists(), f"Target engine not found at {target}"
 
     def _run_mode(self, mode: str, iterations: int = 3, extra_args: list[str] | None = None) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -50,7 +52,7 @@ class TestAllTortureModes(unittest.TestCase):
                 "--workdir",
                 str(work),
                 "--kvdb",
-                str(FAKE_ENGINE),
+                os.environ.get("KVDB_BIN", str(REAL_ENGINE)),
                 "--kill-min-ms",
                 "20",
                 "--kill-max-ms",

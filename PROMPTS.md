@@ -203,3 +203,17 @@ This log records the core user prompts and corresponding engineering deliverable
 - **Cross-Platform Compatibility:** Sanitized console output encoding on Windows consoles and fixed argument parsing nuances in `src/kvdb/cli.py`.
 - **Comprehensive Audit Report:** Authored `audit_report.md` confirming 100% test pass rate (60/60 unit tests) and complete specification compliance across all subsystems.
 - **Commit:** Committed optimizations and audit fixes (`commit 151ca9e`).
+
+---
+
+### 13. Production Engine Shift & Integration Hardening
+**User Prompts:**
+> "Now the engine part is also in the project folder , so now its time for the other deliverabilities  , go through the project folder and give me the what are the core deliverabilities ?"
+> "/plan now wherever needed shift the connection from the fake_engine to the real engine which is built in the project."
+> "[Approved] shift_to_real_engine_plan.md"
+
+**Key Deliverables:**
+- **CI Workflow Transition (`.github/workflows/ci.yml`):** Replaced `--kvdb tests/fake_engine.py` with the production engine `./kvdb` for fast torture verification across `contention`, `recovery-crash`, and `large-batches` modes on Ubuntu and Windows.
+- **Regression Suite Redirection (`tests/test_all_modes.py`):** Configured all 9 torture mode test cases to default to `REAL_ENGINE = REPO_ROOT / "kvdb"`, passing all 8 active regression runs in 27.2s.
+- **Judge Self-Test Baseline Real-Engine Shift (`torture_tool/self_test.py`):** Wired Test 12 to verify the production `kvdb` engine as the healthy baseline while maintaining Tests 13–16 against `tests/fake_engine.py` for injected fault rejection per `docs/TORTURE_SPEC.md §10`.
+

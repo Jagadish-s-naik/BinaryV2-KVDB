@@ -227,15 +227,16 @@ def run_self_tests(kvdb_bin: str | None = None) -> int:
     print("--------------------------------------------------------------------------------")
 
     # --------------------------------------------------------------------------
-    # Section C: Live Subprocess Fault Injection Verification against fake_engine
+    # Section C: Live Subprocess Fault Injection Verification
     # --------------------------------------------------------------------------
+    real_engine = Path(kvdb_bin).resolve() if kvdb_bin else (Path(__file__).resolve().parent.parent / "kvdb")
     fake_engine = Path(__file__).resolve().parent.parent / "tests" / "fake_engine.py"
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         base_work = Path(tmp_dir)
 
-        def run_torture_on_fake(bug: str) -> int:
-            work = base_work / f"work_{bug}"
+        def run_torture(engine_target: Path, bug: str = "none") -> int:
+            work = base_work / f"work_{engine_target.stem}_{bug}"
             env = os.environ.copy()
             if bug != "none":
                 env["FAKE_ENGINE_BUG"] = bug
@@ -250,7 +251,7 @@ def run_self_tests(kvdb_bin: str | None = None) -> int:
                 "--workdir",
                 str(work),
                 "--kvdb",
-                str(fake_engine),
+                str(engine_target),
                 "--kill-min-ms",
                 "20",
                 "--kill-max-ms",
@@ -259,45 +260,47 @@ def run_self_tests(kvdb_bin: str | None = None) -> int:
             res = subprocess.run(cmd, env=env, capture_output=True, text=True)
             return res.returncode
 
-        # Test 12: Normal baseline engine passes
+        # Test 12: Normal baseline engine passes (Real production engine)
         try:
-            rc = run_torture_on_fake("none")
+            baseline_engine = real_engine if real_engine.exists() else fake_engine
+            rc = run_torture(baseline_engine, "none")
             assert rc == 0
-            print("[TEST 12] Live Fault Injection: Normal engine baseline                  [PASSED]")
+            label = "Real kvdb" if baseline_engine == real_engine else "Mock"
+            print(f"[TEST 12] Live Engine Baseline: {label} engine passes normal ops       [PASSED]")
             passed += 1
         except Exception as e:
-            print(f"[TEST 12] Live Fault Injection: Normal engine baseline                  [FAILED: {e}]")
+            print(f"[TEST 12] Live Engine Baseline: Engine baseline passes normal ops        [FAILED: {e}]")
 
-        # Test 13: Injected lost_write caught
+        # Test 13: Injected lost_write caught (adversarial fake_engine)
         try:
-            rc = run_torture_on_fake("lost_write")
+            rc = run_torture(fake_engine, "lost_write")
             assert rc != 0
             print("[TEST 13] Live Fault Injection: Injected lost_write caught              [PASSED]")
             passed += 1
         except Exception as e:
             print(f"[TEST 13] Live Fault Injection: Injected lost_write caught              [FAILED: {e}]")
 
-        # Test 14: Injected partial_batch caught
+        # Test 14: Injected partial_batch caught (adversarial fake_engine)
         try:
-            rc = run_torture_on_fake("partial_batch")
+            rc = run_torture(fake_engine, "partial_batch")
             assert rc != 0
             print("[TEST 14] Live Fault Injection: Injected partial_batch caught           [PASSED]")
             passed += 1
         except Exception as e:
             print(f"[TEST 14] Live Fault Injection: Injected partial_batch caught           [FAILED: {e}]")
 
-        # Test 15: Injected truncate_val caught
+        # Test 15: Injected truncate_val caught (adversarial fake_engine)
         try:
-            rc = run_torture_on_fake("truncate_val")
+            rc = run_torture(fake_engine, "truncate_val")
             assert rc != 0
             print("[TEST 15] Live Fault Injection: Injected truncate_val caught            [PASSED]")
             passed += 1
         except Exception as e:
             print(f"[TEST 15] Live Fault Injection: Injected truncate_val caught            [FAILED: {e}]")
 
-        # Test 16: Injected another_key_val caught
+        # Test 16: Injected another_key_val caught (adversarial fake_engine)
         try:
-            rc = run_torture_on_fake("another_key_val")
+            rc = run_torture(fake_engine, "another_key_val")
             assert rc != 0
             print("[TEST 16] Live Fault Injection: Injected another_key_val caught         [PASSED]")
             passed += 1
