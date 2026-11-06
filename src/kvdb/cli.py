@@ -11,6 +11,17 @@ from kvdb.errors import DBPoisonedError, DiskFullError
 from kvdb.frame import OP_TYPE_DEL, OP_TYPE_PUT
 
 
+def format_cli_bytes(raw: bytes) -> str:
+    """Format bytes for CLI display, escaping non-printable bytes as \\xNN (README.md Section Run)."""
+    out = []
+    for b in raw:
+        if 32 <= b <= 126:
+            out.append(chr(b))
+        else:
+            out.append(f"\\x{b:02x}")
+    return "".join(out)
+
+
 def cmd_open(path: str, max_bytes: int | None = None) -> int:
     """Open or create the database, run recovery, print OK keys=<n> recovery_ms=<t>."""
     try:
@@ -99,9 +110,9 @@ def cmd_batch(path: str, batch_file: str) -> int:
                     continue
                 parts = line.split(" ", 2)
                 op_cmd = parts[0].lower()
-                if op_cmd == "put" and len(parts) >= 3:
+                if op_cmd == "put" and len(parts) >= 2:
                     k = parts[1].encode("utf-8")
-                    v = parts[2].encode("utf-8")
+                    v = parts[2].encode("utf-8") if len(parts) >= 3 else b""
                     ops.append((OP_TYPE_PUT, k, v))
                 elif op_cmd == "del" and len(parts) >= 2:
                     k = parts[1].encode("utf-8")
@@ -137,8 +148,8 @@ def cmd_dump(path: str, hex_mode: bool = False) -> int:
                 hex_v = "-" if not v else v.hex()
                 print(f"{hex_k} {hex_v}")
             else:
-                k_str = k.decode("utf-8", errors="backslashreplace")
-                v_str = v.decode("utf-8", errors="backslashreplace")
+                k_str = format_cli_bytes(k)
+                v_str = format_cli_bytes(v)
                 print(f"{k_str} {v_str}")
         return 0
     except Exception as e:

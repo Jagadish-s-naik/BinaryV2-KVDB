@@ -33,20 +33,77 @@ OP_TYPE_PUT = 1
 OP_TYPE_DEL = 2
 
 
-class ParsedOp(NamedTuple):
-    op_type: int
-    key: bytes
-    val: bytes
-    val_offset_in_frame: int  # Byte offset from the start of the frame to the value
-    val_len: int
+class ParsedOp:
+    __slots__ = ("op_type", "key", "val", "val_offset_in_frame", "val_len")
+
+    def __init__(
+        self,
+        op_type: int,
+        key: bytes,
+        val: bytes,
+        val_offset_in_frame: int,
+        val_len: int,
+    ) -> None:
+        self.op_type = op_type
+        self.key = key
+        self.val = val
+        self.val_offset_in_frame = val_offset_in_frame
+        self.val_len = val_len
+
+    def __getitem__(self, item: int):
+        if item == 0:
+            return self.op_type
+        elif item == 1:
+            return self.key
+        elif item == 2:
+            return self.val
+        elif item == 3:
+            return self.val_offset_in_frame
+        elif item == 4:
+            return self.val_len
+        raise IndexError(f"ParsedOp index out of range: {item}")
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, (ParsedOp, tuple)):
+            return False
+        return (
+            self.op_type == other[0]
+            and self.key == other[1]
+            and self.val == other[2]
+            and self.val_offset_in_frame == other[3]
+            and self.val_len == other[4]
+        )
 
 
-class ParsedFrame(NamedTuple):
-    frame_len: int
-    crc32: int
-    kind: int
-    op_count: int
-    ops: list[ParsedOp]
+class ParsedFrame:
+    __slots__ = ("frame_len", "crc32", "kind", "op_count", "ops")
+
+    def __init__(
+        self,
+        frame_len: int,
+        crc32: int,
+        kind: int,
+        op_count: int,
+        ops: list[ParsedOp],
+    ) -> None:
+        self.frame_len = frame_len
+        self.crc32 = crc32
+        self.kind = kind
+        self.op_count = op_count
+        self.ops = ops
+
+    def __getitem__(self, item: int):
+        if item == 0:
+            return self.frame_len
+        elif item == 1:
+            return self.crc32
+        elif item == 2:
+            return self.kind
+        elif item == 3:
+            return self.op_count
+        elif item == 4:
+            return self.ops
+        raise IndexError(f"ParsedFrame index out of range: {item}")
 
 
 def encode_header(generation: int = 1) -> bytes:
@@ -134,7 +191,10 @@ def parse_frame(
     if pos + 8 > buf_len:
         return None
 
-    frame_len, expected_crc = FRAME_HDR_STRUCT.unpack_from(buf, pos)
+    # Use memoryview to prevent copying multi-megabyte payloads
+    mv = buf if isinstance(buf, memoryview) else memoryview(buf)
+
+    frame_len, expected_crc = FRAME_HDR_STRUCT.unpack_from(mv, pos)
 
     # Rule 2: 13 <= frame_len <= 268,435,456 (prevents zeros from validating)
     if not (MIN_PAYLOAD_LEN <= frame_len <= MAX_PAYLOAD_LEN):
@@ -144,9 +204,9 @@ def parse_frame(
     if (pos + 8 + frame_len > file_size) or (pos + 8 + frame_len > buf_len):
         return None
 
-    # Rule 4: CRC matches (covers frame_len (4 bytes) followed by payload)
-    len_bytes = buf[pos : pos + 4]
-    payload = buf[pos + 8 : pos + 8 + frame_len]
+    # Rule 4: CRC matches (zero-copy memoryview slice)
+    len_bytes = mv[pos : pos + 4]
+    payload = mv[pos + 8 : pos + 8 + frame_len]
     calc_crc = zlib.crc32(payload, zlib.crc32(len_bytes)) & 0xFFFFFFFF
     if calc_crc != expected_crc:
         return None
