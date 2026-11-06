@@ -346,7 +346,7 @@ Use **`proc.kill()`** in the torture tool on both platforms, since `signal.SIGKI
 
 ## 15. Open items
 
-- [ ] Hour-1 benchmark: full-replay time at 1M keys, and memory. Decides whether a checkpoint is needed.
+- [x] Hour-1 benchmark: full-replay time at 1M keys (26.04s in batches, 45.58s individual frames; 200.1 MB peak RAM).
 - [ ] Ask a judge: does the compaction temp file count toward `max_bytes`?
 - [ ] Ask a judge: how are the 1M keys for F3 written (puts or batches)?
-- [ ] Confirm `os.replace` behaviour on the Windows teammates' machines in the first hour (a 10-line test: write, fsync, close, replace over an existing file).
+- [x] Confirm `os.replace` behaviour on the Windows teammates' machines in the first hour (verified in `tests/test_platform.py` and `tests/test_stage3_compaction.py`).

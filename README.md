@@ -53,7 +53,12 @@ del oldkey
 
 ### `serve` protocol
 
-Line based. Keys and values are hex-encoded so any bytes (including 1 MB values) are safe.
+Line based on binary stdin/stdout. Keys and values are lowercase hex-encoded so any bytes (including 1 MB values) are safe. An empty value is represented as `-`.
+
+On startup, once recovery completes, `serve` prints:
+```
+READY keys=<n> recovery_ms=<t>
+```
 
 | Input | Reply |
 |---|---|
@@ -62,9 +67,16 @@ Line based. Keys and values are hex-encoded so any bytes (including 1 MB values)
 | `BATCH <id> <n>` then `n` lines of `put <hexkey> <hexval>` or `del <hexkey>` | `ACK <id>` |
 | `GET <id> <hexkey>` | `VAL <id> <hexval>` or `NOTFOUND <id>` |
 | `COMPACT <id>` | `ACK <id>` |
-| `QUIT` | (exits) |
+| `QUIT` | (exits 0) |
 
-Any failure replies `ERR <id> <code>`. `ACK` is printed **only after the data is fsynced**. Commands run on 8 worker threads, so ids can complete out of order.
+Any failure replies `ERR <id> <code>` with code:
+- `DISK_FULL`: would exceed `--max-bytes`, nothing written.
+- `BAD_ARG`: key or value size out of range, or batch size 0 or > 10,000.
+- `PARSE`: malformed line or invalid hex.
+- `POISONED`: previous fsync failed; writes refused.
+- `INTERNAL`: other unhandled error.
+
+`ACK` is printed **only after the data is fsynced**. Commands run on 8 worker threads, so ids can complete out of order. All replies are flushed immediately.
 
 ### Torture tool
 
