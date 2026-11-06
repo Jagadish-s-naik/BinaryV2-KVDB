@@ -31,21 +31,21 @@ def main():
         # Handle commands from stdin
         store: dict[str, bytes] = {}
         if state_file.exists():
-            for line_raw in state_file.read_bytes().splitlines():
-                try:
-                    line = line_raw.decode("utf-8").strip()
-                except UnicodeDecodeError:
+            raw_data = state_file.read_bytes()
+            for line_raw in raw_data.splitlines():
+                if not line_raw or line_raw.startswith(b"\x00"):
                     break
-                if not line:
-                    continue
-                p = line.split(" ")
-                if len(p) >= 2:
-                    try:
-                        k = bytes.fromhex(p[0]).decode("utf-8")
-                        v = bytes.fromhex(p[1]) if p[1] != "-" else b""
+                try:
+                    text_line = line_raw.decode("utf-8").strip()
+                    parts = text_line.split(" ")
+                    if len(parts) >= 2:
+                        k = bytes.fromhex(parts[0]).decode("utf-8")
+                        v = bytes.fromhex(parts[1]) if parts[1] != "-" else b""
                         store[k] = v
-                    except ValueError:
-                        pass
+                    else:
+                        break
+                except (UnicodeDecodeError, ValueError):
+                    break
 
         # Print handshake
         sys.stdout.buffer.write(f"READY keys={len(store)} recovery_ms=5\n".encode("ascii"))
@@ -162,7 +162,8 @@ def main():
                 req_id, k_hex = parts[1], parts[2]
                 k = bytes.fromhex(k_hex).decode("utf-8")
                 if k in store:
-                    sys.stdout.buffer.write(f"VAL {req_id} {store[k].hex()}\n".encode("ascii"))
+                    val = store[k]
+                    sys.stdout.buffer.write(f"VAL {req_id} {val.hex()}\n".encode("ascii"))
                 else:
                     sys.stdout.buffer.write(f"NOTFOUND {req_id}\n".encode("ascii"))
                 sys.stdout.buffer.flush()
@@ -182,14 +183,24 @@ def main():
         if state_file.exists():
             raw_data = state_file.read_bytes()
             valid_lines = []
-            for line in raw_data.splitlines():
-                try:
-                    text_line = line.decode("utf-8").strip()
-                    if text_line and len(text_line.split(" ")) >= 2:
-                        valid_lines.append(text_line)
-                except UnicodeDecodeError:
-                    # Torn tail at EOF truncated during recovery
+            for line_raw in raw_data.splitlines():
+                if not line_raw or line_raw.startswith(b"\x00"):
+                    # Zero-fill block hole or empty line at EOF
                     break
+                try:
+                    text_line = line_raw.decode("utf-8").strip()
+                    parts = text_line.split(" ")
+                    if len(parts) >= 2:
+                        bytes.fromhex(parts[0])
+                        if parts[1] != "-":
+                            bytes.fromhex(parts[1])
+                        valid_lines.append(text_line)
+                    else:
+                        break
+                except (UnicodeDecodeError, ValueError):
+                    # Torn tail, corrupted CRC, or incomplete bytes truncated at recovery
+                    break
+
             # Persist recovered data
             with open(state_file, "w", encoding="utf-8") as sf:
                 for vl in valid_lines:

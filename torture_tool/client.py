@@ -10,6 +10,7 @@ Per docs/PROTOCOL.md and docs/TORTURE_SPEC.md:
 
 from __future__ import annotations
 
+import collections
 import os
 import subprocess
 import threading
@@ -44,6 +45,7 @@ class ServeClient:
         # In-flight tracking for coverage stats
         self._inflight_lock = threading.Lock()
         self._inflight_ops: dict[str, str] = {}  # op_id -> type ("PUT", "DEL", "BATCH", "COMPACT")
+        self._recent_latencies_ms: collections.deque[float] = collections.deque(maxlen=64)
         self.active_write_event = threading.Event()
 
         # Start background reader thread
@@ -80,6 +82,13 @@ class ServeClient:
         """Returns list of active op descriptions."""
         with self._inflight_lock:
             return list(self._inflight_ops.values())
+
+    def get_avg_latency_ms(self) -> float:
+        """Returns moving average latency of recent operations in milliseconds."""
+        with self._inflight_lock:
+            if len(self._recent_latencies_ms) < 3:
+                return 5.0
+            return sum(self._recent_latencies_ms) / len(self._recent_latencies_ms)
 
     def send_put(
         self,
@@ -241,12 +250,19 @@ class ServeClient:
             if not line:
                 continue
 
-            parts = line.split(" ")
-            tag = parts[0]
+            parts = [p for p in line.split(" ") if p]
+            if not parts:
+                continue
+            tag = parts[0].upper()
 
             if tag == "ACK" and len(parts) >= 2:
                 op_id = parts[1]
                 self.oracle.record_ack(op_id, recv_ns)
+                op = self.oracle.ops_by_id.get(op_id)
+                if op and op.sent_ns > 0:
+                    lat_ms = (recv_ns - op.sent_ns) / 1_000_000.0
+                    with self._inflight_lock:
+                        self._recent_latencies_ms.append(lat_ms)
                 self._finish_op(op_id)
             elif tag == "ERR" and len(parts) >= 3:
                 op_id = parts[1]

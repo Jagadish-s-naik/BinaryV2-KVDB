@@ -138,7 +138,9 @@ ARTIFACTS: torture-work/failure-12345-17/
 - `oracle.log`: complete monotonic timestamp log of every operation sent, ACKed, or failed.
 - `engine.stderr`: stderr text emitted by the engine during the iteration.
 - `operations.txt`: detailed records of operations related to the failing key.
+- `report.md`: **visual invariant violation report** with formatted violation summary table and chronological operations timeline.
 - `reproduce.py`: **standalone self-contained reproducer script**. Running `python reproduce.py` directly inspects raw file binary bytes, finds the byte offset of the failing key in the binary file, dumps context hex, displays the chronological `oracle.log` timeline for that key, and runs `open`, `check`, and `dump --hex`. It requires zero dependencies and reproduces open-time failures regardless of kill timing. Exit code 1.
+- `failure-<seed>-<iter>.zip`: optional compressed bundle containing all failure artifacts generated when `--zip-failure` is supplied.
 
 ## 8. Modes
 

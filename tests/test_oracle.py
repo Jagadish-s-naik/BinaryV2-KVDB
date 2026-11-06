@@ -167,6 +167,23 @@ class TestOracleSyntheticHistories(unittest.TestCase):
         self.assertFalse(res.passed)
         self.assertEqual(res.key, "s:5")
 
+    def test_embedded_nul_key_integrity(self):
+        """Keys containing embedded NUL bytes must not be truncated or corrupted."""
+        k = "s:nul:\x00:test"
+        v = generate_value("i1.w0.1", k.encode().hex())
+        self.oracle.record_sent_put("i1.w0.1", k, v, sent_ns=100)
+        self.oracle.record_ack("i1.w0.1", ack_ns=200)
+
+        # Engine truncated key at NUL: "s:nul:" instead of "s:nul:\x00:test"
+        corrupted_dump = {"s:nul:": v}
+        res = self.oracle.check_invariants(corrupted_dump, self.baseline)
+        self.assertFalse(res.passed)
+
+        # Clean roundtrip matches exactly
+        clean_dump = {k: v}
+        res_ok = self.oracle.check_invariants(clean_dump, self.baseline)
+        self.assertTrue(res_ok.passed)
+
 
 class TestBrokenEngineTortureIntegration(unittest.TestCase):
     """End-to-end test of the TortureRunner against fake broken engines.
@@ -205,9 +222,10 @@ class TestBrokenEngineTortureIntegration(unittest.TestCase):
                 workdir=str(self.workdir / f"run-{bug_name}"),
                 writers=2,
                 inflight=8,
-                kill_min_ms=50,
-                kill_max_ms=100,
+                kill_min_ms=100,
+                kill_max_ms=200,
                 kvdb=self.fake_engine,
+                zip_failure=False,
             )
             runner = TortureRunner(args)
             return runner.run()

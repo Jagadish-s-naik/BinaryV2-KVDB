@@ -48,21 +48,33 @@ class WorkloadGenerator:
         return f"i{self.iteration}.w{self.writer_id}.{self.op_seq}"
 
     def pick_shared_key(self) -> str:
-        """Picks shared key among high-contention keys, 1-byte keys, max-length keys, and utf8 keys."""
+        """Picks shared key among high-contention keys, 1-byte/2-byte keys, max boundary keys (1023/1024), embedded NUL keys, and utf8 keys."""
         roll = self.rng.random()
-        if roll < 0.70:
+        if roll < 0.65:
             # High contention shared keys (s:0 to s:19)
             idx = self.rng.randint(0, self.shared_key_count - 1)
             return f"s:{idx}"
-        elif roll < 0.80:
-            # 1-byte short keys (boundary testing)
-            short_keys = ["k", "z", "1", "9", "x"]
+        elif roll < 0.75:
+            # 1-byte and 2-byte short keys (boundary testing)
+            short_keys = ["k", "z", "1", "9", "x", "k2", "s1"]
             return short_keys[self.rng.randint(0, len(short_keys) - 1)]
+        elif roll < 0.80:
+            # Exact boundary keys: 1023 bytes and 1024 bytes
+            if self.rng.random() < 0.5:
+                prefix = "s:b1023:"
+                return prefix + ("A" * (1023 - len(prefix)))
+            else:
+                prefix = "s:b1024:"
+                return prefix + ("B" * (1024 - len(prefix)))
         elif roll < 0.90:
-            # Max 1024-byte boundary key
-            prefix = "s:long:"
-            pad_len = 1024 - len(prefix)
-            return prefix + ("A" * pad_len)
+            # Embedded NUL byte keys (tests C-string and null-termination vulnerabilities)
+            nul_keys = [
+                "s:nul:\x00:key",
+                "s:nul:mid\x00end",
+                "s:\x00",
+                "s:zero:\x00\x00:trail",
+            ]
+            return nul_keys[self.rng.randint(0, len(nul_keys) - 1)]
         else:
             # UTF-8 multi-byte unicode key
             unicode_keys = [

@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 from torture_tool.client import ServeClient
@@ -170,19 +171,30 @@ class TortureRunner:
             print(f"ERROR: failed to spawn {cmd}: {e}", file=sys.stderr)
             return False, "Failed to spawn kvdb"
 
-        # Wait for READY line
+        # Wait for READY line with startup banner and debug log tolerance
         ready_line = ""
         recovery_ms = 0
         keys_at_start = 0
         try:
             assert proc.stdout is not None
-            raw_ready = proc.stdout.readline()
-            ready_line = raw_ready.decode("ascii", errors="replace").strip()
+            start_wait = time.monotonic()
+            while time.monotonic() - start_wait < 30.0:
+                raw_ready = proc.stdout.readline()
+                if not raw_ready:
+                    break
+                line = raw_ready.decode("ascii", errors="replace").strip()
+                if not line:
+                    continue
+                if line.startswith("READY") or line.startswith("FATAL"):
+                    ready_line = line
+                    break
+
             if not ready_line.startswith("READY"):
                 stderr_out = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
                 print(f"ERROR: kvdb serve did not reply READY (got: {ready_line!r})\nstderr:\n{stderr_out}", file=sys.stderr)
                 proc.kill()
                 proc.wait()
+                self._close_proc_pipes(proc)
                 return False, "Engine failed to send READY"
 
             for token in ready_line.split()[1:]:
@@ -193,6 +205,7 @@ class TortureRunner:
         except Exception as e:
             proc.kill()
             proc.wait()
+            self._close_proc_pipes(proc)
             print(f"ERROR: Exception reading READY: {e}", file=sys.stderr)
             return False, "Engine handshake error"
 
@@ -257,17 +270,34 @@ class TortureRunner:
                 proc.kill()
                 proc.wait()
         else:
-            # In 35% of non-crash-point iterations, dynamically trigger strike on active write burst
-            trigger_write_burst = (self.master_rng.random() < 0.35)
-            if trigger_write_burst:
-                client.active_write_event.wait(timeout=kill_ms / 1000.0)
-                # Jitter spin 50 to 500 microseconds directly inside syscall
+            # Multi-tier precision kill timing:
+            strike_choice = self.master_rng.random()
+            if strike_choice < 0.40 and len(client._recent_latencies_ms) >= 3:
+                # Tier 1 (40%): Adaptive latency strike - target 20% to 80% into the measured write/fsync cycle
+                wait_before = max(0.0, (kill_ms - 15.0) / 1000.0)
+                if wait_before > 0:
+                    time.sleep(wait_before)
+                client.active_write_event.clear()
+                client.active_write_event.wait(timeout=0.05)
+                avg_lat_ms = client.get_avg_latency_ms()
+                target_strike_ms = avg_lat_ms * self.master_rng.uniform(0.20, 0.80)
+                # Microsecond busy-spin directly inside write/fsync syscall window
+                target_ns = time.perf_counter_ns() + int(target_strike_ms * 1_000_000)
+                while time.perf_counter_ns() < target_ns:
+                    pass
+            elif strike_choice < 0.70 and len(client._recent_latencies_ms) >= 1:
+                # Tier 2 (30%): Dynamic write burst strike on active syscall
+                wait_before = max(0.0, (kill_ms - 10.0) / 1000.0)
+                if wait_before > 0:
+                    time.sleep(wait_before)
+                client.active_write_event.clear()
+                client.active_write_event.wait(timeout=0.05)
                 spin_ns = self.master_rng.randint(50_000, 500_000)
                 target_ns = time.perf_counter_ns() + spin_ns
                 while time.perf_counter_ns() < target_ns:
                     pass
             else:
-                # Sub-millisecond precision hybrid sleep + busy-spin
+                # Tier 3 (30%): Sub-millisecond precision hybrid sleep + busy-spin across [min..max]
                 target_ns = time.perf_counter_ns() + int(kill_ms * 1_000_000)
                 rem_s = (kill_ms - 2.0) / 1000.0
                 if rem_s > 0:
@@ -625,18 +655,22 @@ class TortureRunner:
         if not self.db_path.exists():
             return
 
-        # 50% chance: append 1 to 64 random bytes (torn tail, C2)
-        # 50% chance: truncate 1 byte from end of file (lost tail, F4)
         coin = self.master_rng.random()
-        if coin < 0.5:
+        if coin < 0.35:
+            # Mode 1 (35%): Zero-Fill Hole Injection (512B, 1KB, or 4KB of \x00 simulating unwritten disk blocks after power loss)
+            zero_count = self.master_rng.choice([512, 1024, 4096])
+            with open(self.db_path, "ab") as f:
+                f.write(b"\x00" * zero_count)
+        elif coin < 0.65:
+            # Mode 2 (30%): Partial Frame Header Injection (1 to 7 bytes incomplete header appended at EOF)
+            cut_bytes = self.master_rng.randint(1, 7)
+            with open(self.db_path, "ab") as f:
+                f.write(self.master_rng.randbytes(cut_bytes))
+        else:
+            # Mode 3 (35%): Random torn noise bytes (1 to 64 bytes appended at EOF per TORTURE_SPEC.md F2)
             torn_bytes = self.master_rng.randbytes(self.master_rng.randint(1, 64))
             with open(self.db_path, "ab") as f:
                 f.write(torn_bytes)
-        else:
-            cur_sz = self.db_path.stat().st_size
-            if cur_sz > 24:  # do not truncate header
-                with open(self.db_path, "r+b") as f:
-                    f.truncate(cur_sz - 1)
 
         # Run open up to 3 times, each killed after random delay (Scenario F2: chained recovery crashes)
         for stage in range(3):
@@ -1011,6 +1045,55 @@ class TortureRunner:
         with open(art_dir / "reproduce.py", "w", encoding="utf-8") as f:
             f.write(reproduce_code)
 
+        # Generate visual markdown report: report.md
+        report_lines = [
+            f"# Invariant Violation Report",
+            f"",
+            f"**Iteration:** {iteration} | **Seed:** {self.seed} | **Mode:** {self.mode_name}",
+            f"",
+            f"## Violation Summary",
+            f"| Field | Value |",
+            f"|---|---|",
+            f"| **Rule** | `{rule}` |",
+            f"| **Key** | `{key}` |",
+            f"| **Expected** | `{expected_desc}` |",
+            f"| **Found** | `{found_desc}` |",
+            f"",
+            f"## Related Operations Timeline ({len(related_ops)} total)",
+            f"| Op ID | Type | State | Sent (ns) | Acked (ns) |",
+            f"|---|---|---|---|---|",
+        ]
+        for op_id in related_ops:
+            op = oracle.ops_by_id.get(op_id)
+            if op:
+                st = op.state.value if hasattr(op.state, "value") else str(op.state)
+                op_type = getattr(op, "op_type", "BATCH")
+                report_lines.append(f"| `{op.op_id}` | `{op_type}` | `{st}` | {op.sent_ns} | {op.ack_ns or '-'} |")
+
+        report_lines.extend([
+            f"",
+            f"## Reproduction Commands",
+            f"```bash",
+            f"python {escaped_kvdb} open {art_dir}/last-post-kill.db",
+            f"python {escaped_kvdb} check {art_dir}/last-post-kill.db",
+            f"python {escaped_kvdb} dump {art_dir}/last-post-kill.db --hex",
+            f"python {art_dir}/reproduce.py",
+            f"```",
+            f"",
+        ])
+        with open(art_dir / "report.md", "w", encoding="utf-8") as f:
+            f.write("\n".join(report_lines))
+
+        # Bundle into zip if --zip-failure enabled
+        zip_msg = ""
+        if getattr(self.args, "zip_failure", False):
+            zip_file = art_dir.with_suffix(".zip")
+            with zipfile.ZipFile(zip_file, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for file_path in art_dir.iterdir():
+                    if file_path.is_file():
+                        zf.write(file_path, arcname=file_path.name)
+            zip_msg = f"\nBUNDLE:    {zip_file}"
+
         print(
             f"\nFAIL iter {iteration} (seed {self.seed}, mode {self.mode_name})\n"
             f"RULE:      {rule}\n"
@@ -1018,7 +1101,7 @@ class TortureRunner:
             f"FOUND:     {found_desc}\n"
             f"EXPECTED:  {expected_desc}\n"
             f"OPS:       {', '.join(related_ops[:10])}\n"
-            f"ARTIFACTS: {art_dir}/\n",
+            f"ARTIFACTS: {art_dir}/{zip_msg}\n",
             file=sys.stderr,
         )
 
@@ -1056,6 +1139,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--inflight", type=int, default=16, help="Max in-flight operations per writer")
     parser.add_argument("--kill-min-ms", type=int, default=5, help="Minimum kill delay in ms")
     parser.add_argument("--kill-max-ms", type=int, default=600, help="Maximum kill delay in ms")
+    parser.add_argument("--zip-failure", action="store_true", help="Automatically bundle failure artifacts into a .zip archive")
     parser.add_argument(
         "--kvdb",
         default=str(Path(__file__).resolve().parent.parent / "kvdb"),
