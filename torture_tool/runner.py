@@ -809,6 +809,23 @@ class TortureRunner:
         client = ServeClient(proc, oracle)
         client.register_writer(0, inflight_limit=4)
 
+        # Delete any preexisting baseline live keys so database only contains the shrink check workload
+        prior_keys = list(self.baseline_dump.keys())
+        prior_batch_size = 5000
+        if prior_keys:
+            for idx in range(0, len(prior_keys), prior_batch_size):
+                chunk = prior_keys[idx : idx + prior_batch_size]
+                sub_ops = [("DEL", k, None) for k in chunk]
+                client.send_batch(f"shrink.prior_del.{idx}", sub_ops, writer_id=0)
+
+            last_prior_id = f"shrink.prior_del.{((len(prior_keys) - 1) // prior_batch_size) * prior_batch_size}"
+            wait_s = time.monotonic()
+            while time.monotonic() - wait_s < 120.0:
+                op = oracle.ops_by_id.get(last_prior_id)
+                if op and op.state.value == "ACKED":
+                    break
+                time.sleep(0.05)
+
         # Write 100,000 keys in 20 batches of 5,000
         num_batches = 20
         keys_per_batch = 5000
@@ -826,10 +843,16 @@ class TortureRunner:
 
         peak_size = self.db_path.stat().st_size if self.db_path.exists() else 0
 
-        # Delete all 100,000 keys
+        # Delete all 100,000 keys and ensure prior keys are also deleted
         for b in range(num_batches):
             sub_ops = [("DEL", f"sk:{b}:{k}", None) for k in range(keys_per_batch)]
             client.send_batch(f"shrink.del.{b}", sub_ops, writer_id=0)
+
+        if prior_keys:
+            for idx in range(0, len(prior_keys), prior_batch_size):
+                chunk = prior_keys[idx : idx + prior_batch_size]
+                sub_ops = [("DEL", k, None) for k in chunk]
+                client.send_batch(f"shrink.del_prior_cleanup.{idx}", sub_ops, writer_id=0)
 
         last_del_id = f"shrink.del.{num_batches - 1}"
         wait_s = time.monotonic()
@@ -846,10 +869,12 @@ class TortureRunner:
                 break
             time.sleep(0.05)
 
+        time.sleep(0.05)
         proc.kill()
         proc.wait()
         client.stop()
         self._close_proc_pipes(proc)
+        self.baseline_dump = {}
 
         final_size = self.db_path.stat().st_size if self.db_path.exists() else 0
         ratio = (final_size / max(1, peak_size)) * 100.0

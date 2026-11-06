@@ -169,14 +169,12 @@ def main():
                 sys.stdout.buffer.flush()
 
             elif tag == "COMPACT" and len(parts) >= 2:
+                _persist()
                 sys.stdout.buffer.write(f"ACK {parts[1]}\n".encode("ascii"))
                 sys.stdout.buffer.flush()
 
             elif tag == "QUIT":
                 break
-
-            # Persist store to state_file
-            _persist()
 
     elif subcmd == "open":
         count = 0
