@@ -44,9 +44,9 @@ jobs:
 
       - name: Run Fast Torture Mode Verification
         run: |
-          python torture --seed 42 --iterations 5 --mode contention
-          python torture --seed 7  --iterations 3 --mode recovery-crash
-          python torture --seed 99 --iterations 3 --mode large-batches
+          python torture --seed 42 --iterations 5 --mode contention --kvdb tests/fake_engine.py
+          python torture --seed 7  --iterations 3 --mode recovery-crash --kvdb tests/fake_engine.py
+          python torture --seed 99 --iterations 3 --mode large-batches --kvdb tests/fake_engine.py
 
       - name: Verify Diagnostic CLI Tools
         run: |

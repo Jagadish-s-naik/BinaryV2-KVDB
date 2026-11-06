@@ -58,7 +58,9 @@ class TestAllTortureModes(unittest.TestCase):
             ]
             if extra_args:
                 cmd.extend(extra_args)
-            return subprocess.run(cmd, capture_output=True, text=True)
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            return subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
     def test_mode_default(self):
         res = self._run_mode("default", iterations=3)

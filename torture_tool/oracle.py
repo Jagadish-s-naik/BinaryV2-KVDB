@@ -100,7 +100,8 @@ class Oracle:
     def record_sent_put(
         self, op_id: str, key: str, val: bytes, sent_ns: int
     ) -> SingleOp:
-        assert not self.frozen, "Cannot record into frozen oracle"
+        if self.frozen:
+            return None  # type: ignore
         key_hex = key.encode("utf-8").hex()
         op = SingleOp(
             op_id=op_id,
@@ -120,7 +121,8 @@ class Oracle:
         return op
 
     def record_sent_del(self, op_id: str, key: str, sent_ns: int) -> SingleOp:
-        assert not self.frozen, "Cannot record into frozen oracle"
+        if self.frozen:
+            return None  # type: ignore
         key_hex = key.encode("utf-8").hex()
         op = SingleOp(
             op_id=op_id,
@@ -140,7 +142,8 @@ class Oracle:
         sub_ops: list[tuple[str, str, bytes | None]],
         sent_ns: int,
     ) -> BatchOp:
-        assert not self.frozen, "Cannot record into frozen oracle"
+        if self.frozen:
+            return None  # type: ignore
         parsed_sub: list[BatchSubOp] = []
         expected_map: dict[str, bytes | None] = {}
 

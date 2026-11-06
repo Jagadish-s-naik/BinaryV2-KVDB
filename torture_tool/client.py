@@ -98,6 +98,8 @@ class ServeClient:
         writer_id: int | None = None,
         is_large: bool = False,
     ) -> None:
+        if self.oracle.frozen:
+            return
         key_hex = key.encode("utf-8").hex()
         val_hex = val.hex() if val else "-"
         cmd = f"PUT {op_id} {key_hex} {val_hex}\n".encode("ascii")
@@ -130,6 +132,8 @@ class ServeClient:
         key: str,
         writer_id: int | None = None,
     ) -> None:
+        if self.oracle.frozen:
+            return
         key_hex = key.encode("utf-8").hex()
         cmd = f"DEL {op_id} {key_hex}\n".encode("ascii")
 
@@ -160,6 +164,8 @@ class ServeClient:
         sub_ops: list[tuple[str, str, bytes | None]],
         writer_id: int | None = None,
     ) -> None:
+        if self.oracle.frozen:
+            return
         header = f"BATCH {op_id} {len(sub_ops)}\n".encode("ascii")
         lines = [header]
         for op_type, k, v in sub_ops:

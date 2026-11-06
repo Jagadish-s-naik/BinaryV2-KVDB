@@ -33,6 +33,18 @@ from torture_tool.oracle import Oracle, generate_value, validate_raw_binary_db
 from torture_tool.self_test import run_self_tests
 from torture_tool.workload import WorkloadGenerator
 
+# Defensively reconfigure console streams to UTF-8 with replacement for Windows charmap consoles
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 class TortureRunner:
     def __init__(self, args: argparse.Namespace):
@@ -568,7 +580,8 @@ class TortureRunner:
         acked_count = sum(1 for op in oracle.ops_by_id.values() if op.state.value == "ACKED")
         pending_count = sum(1 for op in oracle.ops_by_id.values() if op.state.value == "PENDING")
 
-        desc_str = f" [{', '.join(inflight_summaries[:3])}]" if inflight_summaries else ""
+        safe_summaries = [s.encode("ascii", errors="backslashreplace").decode("ascii") for s in inflight_summaries]
+        desc_str = f" [{', '.join(safe_summaries[:3])}]" if safe_summaries else ""
         print(
             f"iter {iteration:3d}/{self.iterations}  PASS  "
             f"acked={acked_count} pending={pending_count} "
@@ -588,9 +601,13 @@ class TortureRunner:
         stop_event: threading.Event,
     ) -> None:
         while not stop_event.is_set():
-            if not client.acquire_writer_slot(writer_id, timeout=0.1):
+            if not client.acquire_writer_slot(writer_id, timeout=0.05):
                 continue
+            if stop_event.is_set() or client.oracle.frozen:
+                break
             op = gen.next_op()
+            if stop_event.is_set() or client.oracle.frozen:
+                break
             if op.op_type == "PUT":
                 assert op.val is not None
                 is_large = len(op.val) >= 256 * 1024
