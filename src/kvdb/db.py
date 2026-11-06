@@ -141,7 +141,16 @@ class DB:
         frame_len = len(frame_bytes)
 
         # Step 3: Disk-full check
-        self._check_cap(frame_len, is_delete_only)
+        try:
+            self._check_cap(frame_len, is_delete_only)
+        except DiskFullError:
+            # Automatic compact-and-retry (Scenario E5, FORMAT.md Section 9.4)
+            if not is_delete_only:
+                from kvdb.compaction import compact
+                compact(self)
+                self._check_cap(frame_len, is_delete_only)
+            else:
+                raise
 
         crash_point("before_write")
 
@@ -198,8 +207,10 @@ class DB:
         apply_ops(index, ops, base_offset)
 
     def compact(self) -> None:
-        """Rewrite database with live data to reclaim space (Stage 3)."""
-        raise NotImplementedError("Compaction will be implemented in Stage 3")
+        """Rewrite database with live data to reclaim space."""
+        with self._lock:
+            from kvdb.compaction import compact
+            compact(self)
 
     def put(self, key: bytes, value: bytes) -> None:
         """Store a key-value pair durably."""
