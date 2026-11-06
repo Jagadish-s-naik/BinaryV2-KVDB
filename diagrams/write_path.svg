@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 950 680" width="100%" height="100%" style="background-color:#1e1e2e; font-family:system-ui, -apple-system, sans-serif;">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#89b4fa"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#f38ba8"/>
+    </marker>
+  </defs>
+
+  <text x="475" y="35" fill="#cdd6f4" font-size="20" font-weight="bold" text-anchor="middle">kvdb Write Pipeline: Strict 8-Step Ordering &amp; Durability Point</text>
+
+  <!-- Step 0 -->
+  <rect x="250" y="65" width="450" height="42" rx="6" fill="#313244" stroke="#89b4fa" stroke-width="1.5"/>
+  <text x="475" y="91" fill="#cdd6f4" font-size="13" font-weight="bold" text-anchor="middle">0. acquire GLOBAL LOCK (DB._lock)</text>
+
+  <!-- Step 1 -->
+  <rect x="250" y="130" width="450" height="46" rx="6" fill="#313244" stroke="#89b4fa" stroke-width="1.5"/>
+  <text x="475" y="152" fill="#cdd6f4" font-size="13" font-weight="bold" text-anchor="middle">1. validate inputs (keys 1..1024B, values 0..1MiB)</text>
+  <text x="475" y="168" fill="#bac2de" font-size="11" text-anchor="middle">fail: ValueError / BAD_ARG, nothing written</text>
+
+  <!-- Step 2 -->
+  <rect x="250" y="200" width="450" height="46" rx="6" fill="#313244" stroke="#89b4fa" stroke-width="1.5"/>
+  <text x="475" y="222" fill="#cdd6f4" font-size="13" font-weight="bold" text-anchor="middle">2. build complete frame in memory (RAM buffer)</text>
+  <text x="475" y="238" fill="#bac2de" font-size="11" text-anchor="middle">compute frame_len, ops payload, CRC32</text>
+
+  <!-- Step 3 -->
+  <rect x="250" y="270" width="450" height="46" rx="6" fill="#313244" stroke="#89b4fa" stroke-width="1.5"/>
+  <text x="475" y="292" fill="#cdd6f4" font-size="13" font-weight="bold" text-anchor="middle">3. disk-full &amp; capacity check (DB._check_cap)</text>
+  <text x="475" y="308" fill="#bac2de" font-size="11" text-anchor="middle">fail: DiskFullError, auto-compact retry, 64 KiB reserve</text>
+
+  <!-- Crash Point before_write -->
+  <rect x="740" y="280" width="180" height="26" rx="4" fill="#45475a" stroke="#f2cdcd" stroke-width="1"/>
+  <text x="830" y="297" fill="#f2cdcd" font-size="10" text-anchor="middle">CP: before_write</text>
+
+  <!-- Step 4 -->
+  <rect x="250" y="340" width="450" height="46" rx="6" fill="#313244" stroke="#89b4fa" stroke-width="1.5"/>
+  <text x="475" y="362" fill="#cdd6f4" font-size="13" font-weight="bold" text-anchor="middle">4. os.lseek to end_offset, os.write whole frame</text>
+  <text x="475" y="378" fill="#bac2de" font-size="11" text-anchor="middle">loop on partial writes (O_BINARY, unbuffered)</text>
+
+  <!-- Crash Point mid_write -->
+  <rect x="740" y="350" width="180" height="26" rx="4" fill="#45475a" stroke="#f2cdcd" stroke-width="1"/>
+  <text x="830" y="367" fill="#f2cdcd" font-size="10" text-anchor="middle">CP: mid_write</text>
+
+  <!-- Step 5 (DURABILITY POINT) -->
+  <rect x="220" y="415" width="510" height="58" rx="8" fill="#181825" stroke="#a6e3a1" stroke-width="2.5"/>
+  <text x="475" y="440" fill="#a6e3a1" font-size="15" font-weight="bold" text-anchor="middle">5. os.fsync(fd)  [THE DURABILITY POINT]</text>
+  <text x="475" y="460" fill="#cdd6f4" font-size="12" text-anchor="middle">Forces physical disk flush; frame is now durable &amp; recoverable</text>
+
+  <!-- Crash Point after_fsync -->
+  <rect x="740" y="430" width="180" height="26" rx="4" fill="#45475a" stroke="#f2cdcd" stroke-width="1"/>
+  <text x="830" y="447" fill="#f2cdcd" font-size="10" text-anchor="middle">CP: after_fsync_before_index</text>
+
+  <!-- Step 6 -->
+  <rect x="250" y="500" width="450" height="46" rx="6" fill="#313244" stroke="#89b4fa" stroke-width="1.5"/>
+  <text x="475" y="522" fill="#cdd6f4" font-size="13" font-weight="bold" text-anchor="middle">6. update index + end_offset (DB._apply_ops)</text>
+  <text x="475" y="538" fill="#bac2de" font-size="11" text-anchor="middle">in-memory dict updated; last op on key wins</text>
+
+  <!-- Step 7 -->
+  <rect x="250" y="570" width="450" height="38" rx="6" fill="#313244" stroke="#89b4fa" stroke-width="1.5"/>
+  <text x="475" y="594" fill="#cdd6f4" font-size="13" font-weight="bold" text-anchor="middle">7. release GLOBAL LOCK</text>
+
+  <!-- Step 8 -->
+  <rect x="250" y="630" width="450" height="38" rx="6" fill="#313244" stroke="#a6e3a1" stroke-width="1.5"/>
+  <text x="475" y="654" fill="#a6e3a1" font-size="13" font-weight="bold" text-anchor="middle">8. return success / print ACK &lt;id&gt; (stdout flush)</text>
+
+  <!-- Arrows -->
+  <line x1="475" y1="107" x2="475" y2="130" stroke="#89b4fa" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="475" y1="176" x2="475" y2="200" stroke="#89b4fa" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="475" y1="246" x2="475" y2="270" stroke="#89b4fa" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="475" y1="316" x2="475" y2="340" stroke="#89b4fa" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="475" y1="386" x2="475" y2="415" stroke="#89b4fa" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="475" y1="473" x2="475" y2="500" stroke="#89b4fa" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="475" y1="546" x2="475" y2="570" stroke="#89b4fa" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="475" y1="608" x2="475" y2="630" stroke="#89b4fa" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Failure branches -->
+  <path d="M 250 363 L 130 363 L 130 420" stroke="#f38ba8" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#arrow-red)"/>
+  <rect x="40" y="420" width="180" height="40" rx="4" fill="#181825" stroke="#f38ba8" stroke-width="1.5"/>
+  <text x="130" y="437" fill="#f38ba8" font-size="11" text-anchor="middle">Write error: ftruncate</text>
+  <text x="130" y="451" fill="#bac2de" font-size="9" text-anchor="middle">re-raise or POISON</text>
+
+  <path d="M 220 444 L 140 444 L 140 500" stroke="#f38ba8" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#arrow-red)"/>
+  <rect x="40" y="500" width="180" height="40" rx="4" fill="#181825" stroke="#f38ba8" stroke-width="1.5"/>
+  <text x="130" y="517" fill="#f38ba8" font-size="11" text-anchor="middle">fsync error: POISON</text>
+  <text x="130" y="531" fill="#bac2de" font-size="9" text-anchor="middle">never retry fsync</text>
+</svg>
+

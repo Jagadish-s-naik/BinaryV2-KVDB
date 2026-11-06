@@ -1,0 +1,9 @@
+flowchart TB
+    C0["hold GLOBAL LOCK"] --> C1["1. create path.compact, header generation+1"]
+    C1 --> C2["2. write live keys as frames of up to 1000 puts<br/>fail on cap: DiskFullError, delete temp, old file untouched"]
+    C2 --> C3["3. fsync path.compact"]
+    C3 --> C4["4. close old fd"]
+    C4 --> C5["5. os.replace(path.compact, path)  ATOMIC SWAP"]
+    C5 --> C6["6. fsync directory (skipped on Windows)"]
+    C6 --> C7["7. reopen fd, rebuild index offsets, release lock"]
+

@@ -1,0 +1,16 @@
+flowchart TB
+    O1["open(path)"] --> O2["delete leftover path.compact and path.init"]
+    O2 --> O3{"path missing or 0 bytes?"}
+    O3 -- yes --> N1["write path.init with header, fsync,<br/>os.replace to path, fsync directory"]
+    N1 --> READY
+    O3 -- no --> O4{"header valid?<br/>magic, version, header_crc"}
+    O4 -- no --> ERR["raise error, file untouched"]
+    O4 -- yes --> O5["scan frames from offset 24"]
+    O5 --> O6{"next frame valid?<br/>FORMAT 4, rules 1-8"}
+    O6 -- yes --> O7["apply its ops in order to index"]
+    O7 --> O5
+    O6 -- "no, or end of file" --> O8{"stop offset < file size?"}
+    O8 -- yes --> O9["ftruncate to stop offset, fsync"]
+    O8 -- no --> READY
+    O9 --> READY["READY: set end_offset, accept calls"]
+

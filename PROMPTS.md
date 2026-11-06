@@ -217,3 +217,20 @@ This log records the core user prompts and corresponding engineering deliverable
 - **Regression Suite Redirection (`tests/test_all_modes.py`):** Configured all 9 torture mode test cases to default to `REAL_ENGINE = REPO_ROOT / "kvdb"`, passing all 8 active regression runs in 27.2s.
 - **Judge Self-Test Baseline Real-Engine Shift (`torture_tool/self_test.py`):** Wired Test 12 to verify the production `kvdb` engine as the healthy baseline while maintaining Tests 13–16 against `tests/fake_engine.py` for injected fault rejection per `docs/TORTURE_SPEC.md §10`.
 
+---
+
+### 14. Core Deliverables Completion & Championship Verification
+**User Prompts:**
+> "/plan Core Deliverables to Complete: 1. Crash Analysis Document: BREAKING.md, 2. Execute & Fill 32-Row Scenario Proof Table in ARCHITECTURE.md, 3. Real-Engine End-to-End Torture Validation & Coverage Evidence, 4. Architecture Diagrams in diagrams/, 5. CI Pipeline Alignment, 6. Final Audit & Bug Log Synchronization"
+> "[Approved] core_deliverables_plan.md"
+> "continnue"
+
+**Key Deliverables:**
+- **Crash Analysis Specification (`BREAKING.md`):** Authored dense, 2-page (~850 words) crash analysis document covering all 11 named crash points, single durability barrier (`os.fsync`), recovery idempotence, Windows handle discipline (`os.replace`), and fail-safe poisoning.
+- **Proof Scenarios Test Suite (`tests/test_proof_scenarios.py`):** Built and verified automated crash injection harness testing A1–A7, B1–B6, C1–C6, and E1–E5 directly against the real `kvdb` engine.
+- **32-Row Proof Table Synchronization (`ARCHITECTURE.md §3`):** Replaced every `not verified` cell with verified test commands, seeds, dates (2026-11-06), and pass counts.
+- **Live Multi-Mode Torture Verification:** Executed live runs across `default` (50 iters, 50/50 in flight), `contention` (20 iters, 20/20 in flight), `large-values` (20 iters, 14/20 large in flight), `large-batches` (20 iters, 6/20 in flight), `compaction` (10 iters, 3/10 in compact), `recovery-crash` (15 iters, 45 kills during recovery), `disk-full` (10 iters, E5 recovery check), and `crash-points` (20 iters, 20/20 points reached).
+- **Architecture Diagrams (`diagrams/`):** Created 4 `.mmd` Mermaid source files and rendered 4 clean, scalable vector `.svg` diagrams: `components`, `write_path`, `recovery`, and `compaction`.
+- **Audit & Bug Log Alignment:** Logged BUG-005 in `docs/BUGLOG.md` and resolved open items in `docs/FORMAT.md §15`.
+
+

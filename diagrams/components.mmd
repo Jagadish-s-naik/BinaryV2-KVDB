@@ -1,0 +1,38 @@
+flowchart TB
+    subgraph Clients["Callers"]
+        CLI["CLI: put/get/del/batch/dump/check/open"]
+        SERVE["serve: 8 worker threads, ACK printer"]
+        LIB["Library API"]
+    end
+
+    subgraph Engine["kvdb engine (one process)"]
+        LOCK{{"GLOBAL LOCK: threading.Lock<br/>covers put, delete, batch, get, compact, close"}}
+        WP["Write path<br/>validate, build frame, cap check, write, fsync"]
+        IDX["In-memory index<br/>dict: key to packed(value_offset, value_len)"]
+        GUARD["Disk-full guard<br/>max_bytes, reserve, checked BEFORE writing"]
+        REC["Recovery routine<br/>scan frames, apply, truncate torn tail"]
+        COMP["Compaction routine<br/>write path.compact, fsync, os.replace, dir fsync"]
+        CP["Crash-point hooks<br/>KVDB_CRASH_POINT env var"]
+    end
+
+    subgraph Disk["Disk"]
+        DATA[("path: header + frames<br/>the ONLY authoritative state")]
+        TMP[("path.compact / path.init<br/>temporary, deleted on open")]
+    end
+
+    CLI --> LIB
+    SERVE --> LIB
+    LIB --> LOCK
+    LOCK --> WP
+    LOCK --> IDX
+    WP --> GUARD
+    WP --> DATA
+    WP --> IDX
+    REC --> DATA
+    REC --> IDX
+    COMP --> TMP
+    TMP -. "os.replace (atomic)" .-> DATA
+    CP -. "can kill the process at named points" .-> WP
+    CP -. "..." .-> COMP
+    CP -. "..." .-> REC
+

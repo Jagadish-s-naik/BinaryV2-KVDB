@@ -58,21 +58,23 @@ def apply_ops(index: dict[bytes, int], ops: list[ParsedOp], frame_start_offset: 
             index.pop(op.key, None)
 
 
-def cleanup_temp_files(path: str) -> None:
+def cleanup_temp_files(path: str | os.PathLike) -> None:
     """Unconditionally delete leftover path.compact and path.init temporary files."""
+    path_str = str(path)
     for ext in (".compact", ".init"):
-        tmp_path = path + ext
+        tmp_path = path_str + ext
         try:
             os.remove(tmp_path)
         except OSError:
             pass
 
 
-def init_db(path: str) -> None:
+def init_db(path: str | os.PathLike) -> None:
     """Atomically create a new database file at path with generation 1."""
-    init_path = path + ".init"
+    path_str = str(path)
+    init_path = path_str + ".init"
     # Ensure directory exists if path has one
-    dirname = os.path.dirname(os.path.abspath(path))
+    dirname = os.path.dirname(os.path.abspath(path_str))
     if dirname:
         os.makedirs(dirname, exist_ok=True)
 
