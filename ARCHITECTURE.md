@@ -140,6 +140,23 @@ Rows in the proof table reference these names. If the code uses different names,
 
 `_apply_ops` is the **single** function that applies a frame's ops to the index. The live write path and recovery both call it, so batch ordering (B5) cannot differ between "just written" and "after restart."
 
+### 2.1 Independent torture tool module map (`torture_tool/`)
+
+The torture tool is strictly decoupled from `src/kvdb/` (zero imports of engine internals):
+
+| Module / Script | Contents / Responsibilities |
+|---|---|
+| `torture` | Root executable launcher delegating to `torture_tool.runner.main()`. |
+| `torture_tool/oracle.py` | `class Oracle`: tracks monotonic timestamped op history, candidate set exclusion (§6.3), atomicity (§6.4), and value integrity. `validate_raw_binary_db()`: independent raw binary auditor verifying 24-byte header, frame length prefixes, and frame CRC32s per FORMAT.md. |
+| `torture_tool/workload.py` | `class WorkloadGenerator`: deterministic per-writer RNG, key picking, boundary value sizes, intra-batch conflict generation (B5 `put-del`, `del-put`, `overwrite`), and contention generation (D2). |
+| `torture_tool/client.py` | `class ServeClient`: multi-threaded stdin/stdout binary pipe transport, atomic batch writes, active write event signaling for targeted kill strikes, in-flight operation telemetry, and live D4 atomicity reader thread. |
+| `torture_tool/modes.py` | `class ModeConfig`, `get_mode_config()`: parameters for all 9 competition modes (`default`, `contention`, `large-values`, `large-batches`, `compaction`, `recovery-crash`, `disk-full`, `crash-points`, `scale`). |
+| `torture_tool/runner.py` | `class TortureRunner`: hybrid busy-spin sub-millisecond kill loop, dynamic write burst strike, inter-iteration thread isolation, SIGINT trap, post-kill verification (`open`, `check`, `dump`, raw audit), and standalone `reproduce.py` generation. |
+| `torture_tool/self_test.py` | `run_self_tests()`: 16-scenario judge self-test suite covering §10 failure modes, binary format corruptions, and live fault injections. |
+| `tests/fake_engine.py` | Mock engine with fault-injection hooks for testing the torture tool without the real engine. |
+| `tests/test_oracle.py` | Unit tests for oracle invariant logic and broken engine detection. |
+| `tests/test_all_modes.py` | Automated regression test running all 8 active torture modes. |
+
 ---
 
 ## 3. Scenario-to-mechanism proof table (32 rows)
@@ -170,7 +187,7 @@ A batch is **one frame**, so there is no separate commit marker. B1 and B2 descr
 | B2 | "All ops written, no commit marker." **This state does not exist in our format.** The nearest states are (a) frame partial, so none visible, or (b) frame complete, so a valid CRC means all visible | If complete: the batch is fully present, which is legal under the invariant (it was never ACKed, so present or absent is allowed). If partial: none visible. Never some | `frame.parse_frame` | not verified. Planned: CP `after_write_before_fsync` on a batch. Note for the judge: B2's literal "none visible" assumes a marker design |
 | B3 | Complete frame in the OS cache, `fsync` not called | Frame either validates (all ops) or is partial (none). The CRC makes "some" impossible | `recovery.recover` | not verified. Planned: CP `after_write_before_fsync` |
 | B4 | Frame durable, ACK printed | All ops present after recovery | `DB.batch`, `serve.py` | not verified. Planned: default mode with batches |
-| B5 | A frame containing `put X` and `del X` | Ops apply in order; the last op on X wins. The same `_apply_ops` runs live and in recovery, so the result is identical after a crash | `DB._apply_ops`, `recovery.recover` | not verified. Planned: a unit test for both orders, plus oracle check in default mode |
+| B5 | A frame containing `put X` and `del X` | Ops apply in order; the last op on X wins. The same `_apply_ops` runs live and in recovery, so the result is identical after a crash | `DB._apply_ops`, `recovery.recover` | `test_oracle.py::test_batch_internal_overwrite_and_put_del_resolution` & `test_broken_engine_wrong_batch_order` (2026-11-06) |
 | B6 | A 10,000-op frame partly on disk | Same as B1: partial frame cut, none visible. Recovery scans file size only, so cost does not depend on the killed frame | `recovery.recover` | not verified. Planned: `torture --mode large-batches`. Recovery time under 2 s: not yet measured |
 
 ### Group C: crash during recovery and maintenance
@@ -189,9 +206,9 @@ A batch is **one frame**, so there is no separate commit marker. B1 and B2 descr
 | ID | Disk state at the kill | Mechanism | Where in the code | Verified by |
 |---|---|---|---|---|
 | D1 | Whole frames from both writers, last frame possibly torn | The global lock serialises appends, so frames never interleave. Each ACK follows its own fsync, so every ACKed op is in the file | `DB._append_frame` (under `_lock`), `serve.py` worker pool | not verified. Planned: default mode (2+ writers) |
-| D2 | Frames for the same key from both writers, in lock order | Each frame is atomic, so the final value is exactly one writer's value, never a mix. Oracle values embed their op id so the origin is checkable | `DB._append_frame`, `DB._apply_ops` | not verified. Planned: a torture phase where both writers hit a small key set |
+| D2 | Frames for the same key from both writers, in lock order | Each frame is atomic, so the final value is exactly one writer's value, never a mix. Oracle values embed their op id so the origin is checkable | `DB._append_frame`, `DB._apply_ops` | `torture --mode contention --seed 999`, verified by `tests/test_all_modes.py::test_mode_contention` (2026-11-06) |
 | D3 | One batch frame and several single-put frames | The batch is one frame (all or nothing); the puts are separate frames, each with its own fsync before ACK | `DB.batch`, `DB.put` | not verified. Planned: `torture --mode large-batches` with a parallel put writer |
-| D4 | No crash | `get` takes the same lock that the batch holds, and the index is updated only after the frame is durable, inside that lock. A reader sees before or after | `DB.get`, `DB._append_frame` | not verified. Planned: a non-crash unit test with a reader thread and a big batch |
+| D4 | No crash | `get` takes the same lock that the batch holds, and the index is updated only after the frame is durable, inside that lock. A reader sees before or after | `DB.get`, `DB._append_frame` | `torture_tool/client.py` live D4 reader thread & `runner.py::_live_reader_worker` |
 
 ### Group E: disk full
 

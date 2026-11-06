@@ -26,22 +26,24 @@ After a kill and a restart:
 ## 3. Command line
 
 ```
+./torture [--self-test]
 ./torture --seed S [--iterations N] [--mode M] [--workdir DIR] [--writers W] [--inflight K]
           [--kill-min-ms A] [--kill-max-ms B] [--kvdb PATH]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--seed` | **required** | Master seed |
+| `--self-test` | `false` | Run 16-scenario independent self-test suite verifying the tool against all §10 failure modes, binary format corruptions, and live fault injections in ~6s (no `--seed` required) |
+| `--seed` | **required** | Master seed (unless `--self-test` is given) |
 | `--iterations` | 500 | Number of kill/restart cycles |
-| `--mode` | `default` | See section 8 |
+| `--mode` | `default` | `default`, `contention`, `large-values`, `large-batches`, `compaction`, `recovery-crash`, `disk-full`, `crash-points`, `scale` |
 | `--workdir` | `./torture-work` | Must be on a real disk, **not tmpfs or a RAM disk** |
-| `--writers` | 2 (minimum 2) | Concurrent writer threads |
+| `--writers` | 2 (minimum 2) | Concurrent writer threads (defaults to mode-optimal count, e.g. 4 for `contention`) |
 | `--inflight` | 16 | Max unanswered commands per writer |
 | `--kill-min-ms`, `--kill-max-ms` | 5, 600 | Kill delay range |
 | `--kvdb` | `<repo>/kvdb` | The engine launcher; run as `[sys.executable, kvdb, ...]` |
 
-Exit codes: **0** all iterations passed, **1** an invariant violation was found, **2** the tool itself or the environment failed (bad flags, the engine did not start, etc.). Never report a tool crash as a database failure or the reverse.
+Exit codes: **0** all iterations passed, **1** an invariant violation was found, **2** the tool itself or the environment failed (bad flags, the engine did not start, etc.), **130** cleanly interrupted by user (`Ctrl+C`). Never report a tool crash as a database failure or the reverse.
 
 ## 4. One iteration (default flow)
 
@@ -130,13 +132,20 @@ OPS:       i17.w1.42, i17.w0.51, i17.w1.60
 ARTIFACTS: torture-work/failure-12345-17/
 ```
 
-`ARTIFACTS` holds the post-kill database copy, the oracle file, the engine's stderr, and the full list of operations on the failing key. **The saved database file is the reproducer.** Running `kvdb open`, `check` and `dump` on it reproduces open-time failures regardless of kill timing, which a seed alone cannot. Exit code 1.
+`ARTIFACTS` holds:
+- `last-post-kill.db`: exact snapshot of the database file at the instant of SIGKILL.
+- `failed.db`: database after open/recovery attempts.
+- `oracle.log`: complete monotonic timestamp log of every operation sent, ACKed, or failed.
+- `engine.stderr`: stderr text emitted by the engine during the iteration.
+- `operations.txt`: detailed records of operations related to the failing key.
+- `reproduce.py`: **standalone self-contained reproducer script**. Running `python reproduce.py` directly inspects raw file binary bytes, finds the byte offset of the failing key in the binary file, dumps context hex, displays the chronological `oracle.log` timeline for that key, and runs `open`, `check`, and `dump --hex`. It requires zero dependencies and reproduces open-time failures regardless of kill timing. Exit code 1.
 
 ## 8. Modes
 
 | Mode | What differs from `default` |
 |---|---|
 | `default` | Mix in section 5, 2 writers + reader, random kill |
+| `contention` | 4 concurrent writers targeting identical shared keys (`s:0` and `s:1`) with alternating 50% PUT / 50% DEL. Stresses high same-key concurrency, lock contention, and rapid overwrites. Targets D2 |
 | `large-values` | 50% of puts carry 512 KiB to 1 MiB values; batches of 1 to 5 such ops. Verified by `sha256`. Targets A7 |
 | `large-batches` | Writer 0 sends batches of 1,000 to 10,000 small operations; other writers send single puts at the same time. Targets B6 and D3 |
 | `compaction` | About 40% deletes and overwrites to create garbage, plus a thread sending `COMPACT` every 50 to 300 ms. Kill at random. After the iterations, a shrink check: write 100,000 keys, delete them all, `COMPACT`, and require the file to be under 5% of its peak size. Targets C3 to C5 |
@@ -149,7 +158,7 @@ ARTIFACTS: torture-work/failure-12345-17/
 
 One line per iteration:
 ```
-iter  17/500  PASS  acked=312 pending=9 inflight_at_kill=5 batch_inflight=1 kill_ms=237 recovery_ms=41
+iter  17/500  PASS  acked=312 pending=9 inflight_at_kill=5 [PUT(s:0), DEL(s:1)] batch_inflight=1 kill_ms=237 recovery_ms=41
 ```
 Final:
 ```
@@ -161,12 +170,15 @@ Coverage numbers are the proof that the kills landed where claimed. A mode whose
 
 ## 10. Testing the tool itself
 
-A passing result is meaningless until the tool is shown to **fail on a broken engine**. Write `tests/test_oracle.py` using synthetic histories (no engine needed) covering each check in section 6, and a small fake `serve` with deliberately injected bugs. The tool must report FAIL for each:
-1. ACKs before writing (lost write).
-2. Drops an ACKed write after restart.
-3. Applies only some operations of a batch.
-4. Returns a value truncated by one byte.
-5. Returns another key's value.
-6. A put-then-delete in a batch resolves to the wrong order.
+A passing result is meaningless until the tool is shown to **fail on a broken engine**. The test suite includes:
+- `tests/test_oracle.py`: unit tests using synthetic histories (no engine needed) covering each check in section 6, plus subprocess integration tests against `tests/fake_engine.py` injecting bugs.
+- `tests/fake_engine.py`: standalone mock server supporting fault-injections:
+  1. ACKs before writing (`lost_write`).
+  2. Applies only some operations of a batch (`partial_batch`).
+  3. Returns a value truncated by one byte (`truncate_val`).
+  4. Returns another key's value (`another_key_val`).
+  5. A put-then-delete in a batch resolves to the wrong order (`wrong_batch_order`).
+- `tests/test_all_modes.py`: end-to-end regression harness verifying all 8 modes run cleanly to completion.
+- `./torture --self-test` (`torture_tool/self_test.py`): standalone 16-scenario suite verifying all 6 failure modes, 5 raw binary format and CRC corruption scenarios per FORMAT.md, and 5 live subprocess fault-injection tests. Runs in ~6 seconds with zero pip dependencies.
 
-Keep this fake in `tests/`, not in the engine. If the oracle passes a broken engine, nothing else in this document matters.
+Keep `fake_engine.py` in `tests/`, strictly isolated from `src/kvdb/`. If the oracle passes a broken engine, nothing else in this document matters.
