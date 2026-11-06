@@ -15,7 +15,7 @@ import os
 import subprocess
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from torture_tool.oracle import Oracle
 
@@ -161,7 +161,7 @@ class ServeClient:
     def send_batch(
         self,
         op_id: str,
-        sub_ops: list[tuple[str, str, bytes | None]],
+        sub_ops: Sequence[tuple[str, str, bytes | None]],
         writer_id: int | None = None,
     ) -> None:
         if self.oracle.frozen:

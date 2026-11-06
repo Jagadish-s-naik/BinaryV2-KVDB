@@ -15,6 +15,7 @@ import zlib
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Sequence
 
 
 class OpState(str, Enum):
@@ -139,7 +140,7 @@ class Oracle:
     def record_sent_batch(
         self,
         op_id: str,
-        sub_ops: list[tuple[str, str, bytes | None]],
+        sub_ops: Sequence[tuple[str, str, bytes | None]],
         sent_ns: int,
     ) -> BatchOp:
         if self.frozen:

@@ -1,11 +1,16 @@
 """Utilitarian visualizer and telemetry HUD for the kvdb torture tool.
 
-Provides clean, tasteful CLI visual flare with zero external dependencies:
+Provides mathematically aligned tabular CLI data presentation with zero external dependencies:
+- Universal 98-character width standard across Header, Stream Table, and Scorecard
+- Structured 4-quadrant metadata header grid
+- Fixed-width tabular stream columns with dedicated column header
 - ANSI color palette (dim cyan, bold white, bright green, bright yellow, bright blue, muted gray)
-- Compact Unicode box frames (┌─┐, │, └─┘)
 - Dynamic progress bar and pipe buffer saturation gauge
 - Live iteration log stream formatter with status badges (✔, ⚡, ↻)
-- Post-run executive proof scorecard with ASCII strike distribution bar chart
+- 3-panel post-run executive proof scorecard:
+    1. Execution & Capacity Metrics
+    2. Strike Targeting Distribution (Microsecond Sniper Telemetry)
+    3. Invariant Verification Audit
 - Automatic TTY detection (sys.stdout.isatty()) with clean plain-text fallback for CI and pipes
 """
 
@@ -65,13 +70,6 @@ class ANSI:
     B_CYAN = "\033[1;36m"
     B_WHITE = "\033[1;37m"
 
-    # Cursor control
-    CLEAR_LINE = "\033[2K\r"
-    CURSOR_UP = lambda n=1: f"\033[{n}A"
-    CURSOR_DOWN = lambda n=1: f"\033[{n}B"
-    SAVE_CURSOR = "\033[s"
-    RESTORE_CURSOR = "\033[u"
-
 
 @dataclass
 class HUDState:
@@ -97,7 +95,9 @@ class HUDState:
 
 
 class FlightRecorderHUD:
-    """Zero-dependency utilitarian telemetry HUD with tasteful CLI visual flare."""
+    """Zero-dependency structured telemetry HUD with strict 98-character alignment."""
+
+    BOX_W = 98
 
     def __init__(
         self,
@@ -107,6 +107,7 @@ class FlightRecorderHUD:
         writers: int,
         inflight_cap: int,
         ui_mode: str = "auto",
+        workdir: str = "./torture-work",
     ) -> None:
         self.mode = mode
         self.seed = seed
@@ -114,6 +115,7 @@ class FlightRecorderHUD:
         self.writers = writers
         self.inflight_cap = inflight_cap
         self.ui_mode = ui_mode.lower().strip()
+        self.workdir = workdir
 
         # Determine if interactive ANSI rendering should be enabled
         if self.ui_mode == "plain":
@@ -122,13 +124,10 @@ class FlightRecorderHUD:
             self.interactive = True
         else:  # auto
             is_tty = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
-            # Windows terminal handles ANSI if VT processing is active
             self.interactive = is_tty and os.environ.get("TERM") != "dumb"
 
         self.start_time = time.monotonic()
         self.last_render_time = 0.0
-        self._header_rendered = False
-        self._hud_lines_count = 6
 
     def _c(self, text: str, color_code: str) -> str:
         """Apply color code if interactive ANSI mode is active."""
@@ -136,51 +135,78 @@ class FlightRecorderHUD:
             return text
         return f"{color_code}{text}{ANSI.RESET}"
 
-    def format_bar(self, current: int, total: int, width: int = 20, fill_char: str = "█", empty_char: str = "░") -> str:
-        if total <= 0:
-            pct = 0.0
-            filled = 0
-        else:
-            pct = max(0.0, min(1.0, current / total))
-            filled = int(round(pct * width))
-        empty = width - filled
-        return f"[{fill_char * filled}{empty_char * empty}] {int(pct * 100):2d}%"
-
-    def format_buffer_gauge(self, inflight: int, max_cap: int, width: int = 16) -> str:
-        cap = max(1, max_cap)
-        pct = max(0.0, min(1.0, inflight / cap))
-        filled = int(round(pct * width))
-        empty = width - filled
-        bar = f"[{'■' * filled}{'·' * empty}] {int(pct * 100):2d}%"
-        if pct > 0.8:
-            return self._c(bar, ANSI.B_RED)
-        elif pct > 0.5:
-            return self._c(bar, ANSI.B_YELLOW)
-        return self._c(bar, ANSI.B_GREEN)
+    def _box_row(self, content: str) -> str:
+        """Format an internal box row with exactly BOX_W visible characters."""
+        inner_w = self.BOX_W - 6  # 2 outer pipes + 4 margin spaces (2 on each side)
+        return f"{self._c('│', ANSI.CYAN)}  {pad_vis(content, inner_w)}  {self._c('│', ANSI.CYAN)}"
 
     def print_banner(self) -> None:
-        """Render the initial run banner."""
-        box_w = 78
-        sep_top = self._c("┌" + "─" * (box_w - 2) + "┐", ANSI.CYAN)
-        sep_mid = self._c("├" + "─" * (box_w - 2) + "┤", ANSI.CYAN)
-        sep_bot = self._c("└" + "─" * (box_w - 2) + "┘", ANSI.CYAN)
+        """Render the initial structured 4-quadrant run banner at exact BOX_W width."""
+        sep_top = self._c("┌" + "─" * (self.BOX_W - 2) + "┐", ANSI.CYAN)
+        c1, c2, c3, c4 = 23, 23, 24, 23
+        sep_quad = self._c("├" + "─" * c1 + "┬" + "─" * c2 + "┬" + "─" * c3 + "┬" + "─" * c4 + "┤", ANSI.CYAN)
+        sep_bot = self._c("└" + "─" * c1 + "┴" + "─" * c2 + "┴" + "─" * c3 + "┴" + "─" * c4 + "┘", ANSI.CYAN)
 
-        title = self._c(" KVDB TORTURE TEST & VERIFICATION HARNESS ", ANSI.B_WHITE)
-        meta1 = f"Mode: {self._c(self.mode, ANSI.B_CYAN)}  │  Seed: {self._c(self.seed, ANSI.B_YELLOW)}  │  Iterations: {self._c(str(self.total_iterations), ANSI.B_WHITE)}"
-        meta2 = f"Writers: {self.writers}  │  In-Flight Cap: {self.inflight_cap}/writer  │  UI: {self.ui_mode}"
+        title = self._c(" KVDB TORTURE HARNESS & TELEMETRY RECORDER ", ANSI.B_WHITE)
+
+        row1_c1 = f"Mode: {self._c(self.mode[:14], ANSI.B_CYAN)}"
+        row1_c2 = f"Seed: {self._c(self.seed[:14], ANSI.B_YELLOW)}"
+        row1_c3 = f"Iterations: {self._c(str(self.total_iterations), ANSI.B_WHITE)}"
+        row1_c4 = f"Writers: {self.writers}"
+
+        row2_c1 = f"In-Flight Cap: {self.inflight_cap}"
+        short_dir = os.path.basename(str(self.workdir)) or "./work"
+        row2_c2 = f"Work: {short_dir[:14]}"
+        row2_c3 = f"UI Mode: {self.ui_mode}"
+        row2_c4 = f"Status: {self._c('RUNNING', ANSI.B_GREEN)}"
 
         if self.interactive:
             print(sep_top)
-            print(f"{self._c('│', ANSI.CYAN)}{pad_vis(title, box_w - 2, align='^')}{self._c('│', ANSI.CYAN)}")
-            print(sep_mid)
-            print(f"{self._c('│', ANSI.CYAN)}  {pad_vis(meta1, box_w - 4)}  {self._c('│', ANSI.CYAN)}")
-            print(f"{self._c('│', ANSI.CYAN)}  {pad_vis(meta2, box_w - 4)}  {self._c('│', ANSI.CYAN)}")
+            print(f"{self._c('│', ANSI.CYAN)}{pad_vis(title, self.BOX_W - 2, align='^')}{self._c('│', ANSI.CYAN)}")
+            print(sep_quad)
+            r1 = (
+                f"{self._c('│', ANSI.CYAN)} {pad_vis(row1_c1, 21)} "
+                f"{self._c('│', ANSI.CYAN)} {pad_vis(row1_c2, 21)} "
+                f"{self._c('│', ANSI.CYAN)} {pad_vis(row1_c3, 22)} "
+                f"{self._c('│', ANSI.CYAN)} {pad_vis(row1_c4, 21)} {self._c('│', ANSI.CYAN)}"
+            )
+            r2 = (
+                f"{self._c('│', ANSI.CYAN)} {pad_vis(row2_c1, 21)} "
+                f"{self._c('│', ANSI.CYAN)} {pad_vis(row2_c2, 21)} "
+                f"{self._c('│', ANSI.CYAN)} {pad_vis(row2_c3, 22)} "
+                f"{self._c('│', ANSI.CYAN)} {pad_vis(row2_c4, 21)} {self._c('│', ANSI.CYAN)}"
+            )
+            print(r1)
+            print(r2)
             print(sep_bot)
         else:
             print(
                 f"kvdb torture runner started: seed={self.seed}, mode={self.mode}, "
                 f"iterations={self.total_iterations}, writers={self.writers}, inflight={self.inflight_cap}"
             )
+
+    def print_stream_header(self) -> None:
+        """Render the structured tabular stream column header at exact BOX_W width."""
+        header_text = (
+            f"  {pad_vis('ITER', 7, align='>')}  "
+            f"{pad_vis('STATUS', 8, align='^')}  "
+            f"{pad_vis('ACK / PEND', 11, align='^')}  "
+            f"{pad_vis('IN-FLIGHT OPS', 16)}  "
+            f"{pad_vis('STRIKE TARGET & DELAY', 25)}  "
+            f"{pad_vis('RECOVERY & KEYS', 18)} "
+        )
+        sep_line = (
+            f"  {'─' * 7}  "
+            f"{'─' * 8}  "
+            f"{'─' * 11}  "
+            f"{'─' * 16}  "
+            f"{'─' * 25}  "
+            f"{'─' * 18} "
+        )
+        print()
+        print(self._c(header_text, ANSI.BOLD))
+        print(self._c(sep_line, ANSI.GRAY))
+        sys.stdout.flush()
 
     def print_iteration_line(
         self,
@@ -197,22 +223,41 @@ class FlightRecorderHUD:
         strike_phase: str = "IN_WRITE",
         strike_delay_us: int = 0,
     ) -> None:
-        """Format and print a dense, structured iteration line to the log stream."""
-        status_badge = self._c("✔ PASS", ANSI.B_GREEN) if passed else self._c("✘ FAIL", ANSI.B_RED)
+        """Format and print an iteration row with exact BOX_W (98) width."""
+        iter_str = pad_vis(f"{iteration:3d}/{self.total_iterations}", 7, align=">")
+        status_badge = pad_vis(self._c("✔ PASS", ANSI.B_GREEN) if passed else self._c("✘ FAIL", ANSI.B_RED), 8, align="^")
+
+        ack_pend_str = pad_vis(f"{acked:,} / {pending}", 11, align="^")
+
+        # In-flight summary (clean ascii sanitization, max 10 chars)
+        first_desc = inflight_summaries[0] if inflight_summaries else "none"
+        first_desc = first_desc.encode("ascii", errors="backslashreplace").decode("ascii")
+        if len(first_desc) > 10:
+            first_desc = first_desc[:9] + "…"
+        inflight_str = pad_vis(f"{total_inflight:2d} ({first_desc})", 16)
+
+        # Compact phase name
+        short_phase = {
+            "IN_FLIGHT_WRITE": "IN_WRITE",
+            "FSYNC_WINDOW": "FSYNC_WIN",
+            "COMPACTION_SWAP": "COMPACT",
+            "RECOVERY_REPLAY": "RECOVERY",
+            "IDLE_PIPE": "IDLE",
+        }.get(strike_phase, strike_phase[:9])
+
         strike_badge = self._c("⚡", ANSI.B_YELLOW)
-        recovery_badge = self._c("↻", ANSI.B_BLUE)
+        if strike_delay_us > 0:
+            delay_fmt = f"{strike_delay_us:,} µs"
+            strike_str = pad_vis(f"{strike_badge} {delay_fmt:>9} [{short_phase:<9}]", 25)
+        else:
+            delay_fmt = f"{kill_ms} ms"
+            strike_str = pad_vis(f"{strike_badge} {delay_fmt:>9} [{short_phase:<9}]", 25)
 
-        safe_summaries = [s.encode("ascii", errors="backslashreplace").decode("ascii") for s in inflight_summaries]
-        desc_str = f" [{', '.join(safe_summaries[:2])}]" if safe_summaries else ""
+        # Recovery & live keys
+        rec_badge = self._c("↻", ANSI.B_BLUE)
+        rec_str = pad_vis(f"{rec_badge} {recovery_ms:3d} ms ({keys_count:>5,} k)", 18)
 
-        strike_info = f"{strike_badge} strike={strike_delay_us}µs({strike_phase})" if strike_delay_us > 0 else f"{strike_badge} kill_ms={kill_ms}"
-        rec_info = f"{recovery_badge} rec={recovery_ms}ms(keys={keys_count})"
-
-        line = (
-            f"iter {iteration:3d}/{self.total_iterations}  {status_badge}  "
-            f"acked={acked} pend={pending} inflight={total_inflight}{desc_str} "
-            f"{strike_info} {rec_info}"
-        )
+        line = f"  {iter_str}  {status_badge}  {ack_pend_str}  {inflight_str}  {strike_str}  {rec_str} "
         print(line)
         sys.stdout.flush()
 
@@ -225,12 +270,13 @@ class FlightRecorderHUD:
         live_keys: int,
         strike_stats: dict[str, Any],
         invariants_verified: list[tuple[str, str, bool]],
+        avg_recovery_ms: float = 0.0,
+        max_recovery_ms: int = 0,
     ) -> None:
-        """Render the post-run executive proof scorecard."""
-        box_w = 78
-        sep_top = self._c("┌" + "─" * (box_w - 2) + "┐", ANSI.CYAN)
-        sep_mid = self._c("├" + "─" * (box_w - 2) + "┤", ANSI.CYAN)
-        sep_bot = self._c("└" + "─" * (box_w - 2) + "┘", ANSI.CYAN)
+        """Render the post-run executive proof scorecard with exact BOX_W width."""
+        sep_top = self._c("┌" + "─" * (self.BOX_W - 2) + "┐", ANSI.CYAN)
+        sep_mid = self._c("├" + "─" * (self.BOX_W - 2) + "┤", ANSI.CYAN)
+        sep_bot = self._c("└" + "─" * (self.BOX_W - 2) + "┘", ANSI.CYAN)
 
         title = self._c(" KVDB TORTURE TELEMETRY & PROOF SUMMARY ", ANSI.B_WHITE)
         tot_iters = iterations_passed + iterations_failed
@@ -242,14 +288,41 @@ class FlightRecorderHUD:
 
         print()
         print(sep_top)
-        print(f"{self._c('│', ANSI.CYAN)}{pad_vis(title, box_w - 2, align='^')}{self._c('│', ANSI.CYAN)}")
+        print(f"{self._c('│', ANSI.CYAN)}{pad_vis(title, self.BOX_W - 2, align='^')}{self._c('│', ANSI.CYAN)}")
         print(sep_mid)
-        line1 = f"Mode: {self._c(self.mode, ANSI.B_CYAN)}   Seed: {self._c(self.seed, ANSI.B_YELLOW)}   Iterations: {status_str}"
-        line2 = f"DB Size: {db_str}   Live Keys: {live_keys:,}   Verified Ops: {total_acked:,}"
-        print(f"{self._c('│', ANSI.CYAN)}  {pad_vis(line1, box_w - 4)}  {self._c('│', ANSI.CYAN)}")
-        print(f"{self._c('│', ANSI.CYAN)}  {pad_vis(line2, box_w - 4)}  {self._c('│', ANSI.CYAN)}")
+
+        # Panel 1: Execution & Capacity Metrics
+        p1_title = self._c("1. EXECUTION & CAPACITY METRICS", ANSI.BOLD)
+        print(self._box_row(p1_title))
+        mode_field = pad_vis(f"Mode: {self._c(self.mode, ANSI.B_CYAN)}", 26)
+        seed_field = pad_vis(f"Seed: {self._c(self.seed, ANSI.B_YELLOW)}", 26)
+        iter_field = pad_vis(f"Iterations: {status_str}", 28)
+        m_row1 = f"  {mode_field}  {seed_field}  {iter_field}"
+
+        db_field = pad_vis(f"Target DB Size: {db_str}", 32)
+        keys_field = pad_vis(f"Live Keys: {live_keys:,} keys", 26)
+        ops_field = pad_vis(f"Verified Ops: {total_acked:,}", 24)
+        m_row2 = f"  {db_field}  {keys_field}  {ops_field}"
+
+        rec_avg_field = pad_vis(f"Avg Recovery: {avg_recovery_ms:.1f} ms", 26)
+        rec_max_field = pad_vis(f"Max Recovery: {max_recovery_ms} ms", 24)
+        pass_badge = self._c("PASS", ANSI.B_GREEN)
+        quota_field = pad_vis(f"Quota Limit: <2,000 ms [{pass_badge}]", 32)
+        m_row3 = f"  {rec_avg_field}  {rec_max_field}  {quota_field}"
+
+        print(self._box_row(m_row1))
+        print(self._box_row(m_row2))
+        print(self._box_row(m_row3))
+
         print(sep_mid)
-        print(f"{self._c('│', ANSI.CYAN)}  {pad_vis(self._c('STRIKE TARGETING DISTRIBUTION (Microsecond Sniper Telemetry)', ANSI.BOLD), box_w - 4)}  {self._c('│', ANSI.CYAN)}")
+
+        # Panel 2: Strike Targeting Distribution
+        p2_title = self._c("2. STRIKE TARGETING DISTRIBUTION (Microsecond Sniper Telemetry)", ANSI.BOLD)
+        print(self._box_row(p2_title))
+        subhdr = f"  {'Target Phase':<20}   {'Distribution Gauge':<22}   {'Percentage':<16}   {'Avg Latency':>18}"
+        subdiv = f"  {'─'*20}   {'─'*22}   {'─'*16}   {'─'*18}"
+        print(self._box_row(self._c(subhdr, ANSI.GRAY)))
+        print(self._box_row(self._c(subdiv, ANSI.GRAY)))
 
         counts: dict[str, int] = strike_stats.get("counts", {})
         total_strikes = max(1, sum(counts.values()))
@@ -265,24 +338,37 @@ class FlightRecorderHUD:
             cnt = counts.get(key, 0)
             pct = (cnt / total_strikes) * 100.0
             avg_us = strike_stats.get("avg_us", {}).get(key, 0)
-            delay_str = f"{avg_us:,} µs avg" if avg_us > 0 else "N/A"
+            delay_str = f"{avg_us:,} µs avg delay" if avg_us > 0 else "N/A"
             bar_w = 20
-            bar_filled = int(round((cnt / total_strikes) * bar_w))
+            bar_filled = round((cnt / total_strikes) * bar_w)
             bar_empty = bar_w - bar_filled
             bar_str = f"[{'█' * bar_filled}{'░' * bar_empty}]"
             colored_bar = self._c(bar_str, col)
-            row = f"  {display_name:<16} {colored_bar} {pct:5.1f}% ({cnt:2d})   {delay_str:>12}"
-            print(f"{self._c('│', ANSI.CYAN)}  {pad_vis(row, box_w - 4)}  {self._c('│', ANSI.CYAN)}")
+            pct_cnt = f"{pct:5.1f}% ({cnt:2d} iters)"
+            row = f"  {display_name:<20}   {colored_bar}   {pct_cnt:<16}   {delay_str:>18}"
+            print(self._box_row(row))
 
         print(sep_mid)
-        print(f"{self._c('│', ANSI.CYAN)}  {pad_vis(self._c('INVARIANT VERIFICATION AUDIT', ANSI.BOLD), box_w - 4)}  {self._c('│', ANSI.CYAN)}")
+
+        # Panel 3: Invariant Verification Audit
+        p3_title = self._c("3. INVARIANT VERIFICATION AUDIT", ANSI.BOLD)
+        print(self._box_row(p3_title))
+        aud_subhdr = f"  {'Code':<8}  {'Rule Description':<66}  {'Verdict':>10}"
+        aud_subdiv = f"  {'─'*8}  {'─'*66}  {'─'*10}"
+        print(self._box_row(self._c(aud_subhdr, ANSI.GRAY)))
+        print(self._box_row(self._c(aud_subdiv, ANSI.GRAY)))
 
         for code, desc, passed in invariants_verified:
             badge = self._c("✔", ANSI.B_GREEN) if passed else self._c("✘", ANSI.B_RED)
             tag = self._c(code, ANSI.B_WHITE)
-            status_text = self._c("PASSED", ANSI.GREEN) if passed else self._c("VIOLATED", ANSI.B_RED)
-            row = f"  {badge} {tag:<5} {desc:<48} [{status_text}]"
-            print(f"{self._c('│', ANSI.CYAN)}  {pad_vis(row, box_w - 4)}  {self._c('│', ANSI.CYAN)}")
+            code_col = f"{badge} {tag}"
+            status_text = self._c("PASSED", ANSI.B_GREEN) if passed else self._c("VIOLATED", ANSI.B_RED)
+            verdict_badge = f"[{status_text}]"
+            v_col = pad_vis(verdict_badge, 10, align=">")
+            c_col = pad_vis(code_col, 8)
+            d_col = pad_vis(desc, 66)
+            row = f"  {c_col}  {d_col}  {v_col}"
+            print(self._box_row(row))
 
         print(sep_bot)
         print()

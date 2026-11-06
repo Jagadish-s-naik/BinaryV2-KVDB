@@ -92,11 +92,13 @@ class TortureRunner:
             writers=self.writers_count,
             inflight_cap=self.inflight_limit,
             ui_mode=getattr(self.args, "ui", "auto"),
+            workdir=str(self.workdir),
         )
         self.fuzz_corrupt = getattr(self.args, "fuzz_corrupt", False) or self.mode_cfg.is_fault_injection_mode
         self.total_verified_ops = 0
         self.passed_iterations = 0
         self.failed_iterations = 0
+        self.recovery_durations: list[int] = []
 
     @staticmethod
     def _close_proc_pipes(proc: subprocess.Popen | None) -> None:
@@ -125,6 +127,7 @@ class TortureRunner:
             return 2
 
         self.ui.print_banner()
+        self.ui.print_stream_header()
 
         try:
             if self.mode_name == "scale":
@@ -308,7 +311,7 @@ class TortureRunner:
                 proc.wait()
             strike_phase = "CRASH_POINT"
         else:
-            is_compact = bool(self.mode_cfg.enable_compaction_thread or is_compact_cp)
+            is_compact = self.mode_cfg.enable_compaction_thread or is_compact_cp
             strike_delay_ns, target_phase = self.sniper.compute_strike_timing(
                 base_kill_ms=kill_ms,
                 is_compact_active=is_compact,
@@ -336,7 +339,7 @@ class TortureRunner:
                 while time.perf_counter_ns() < target_ns:
                     pass
             else:
-                target_ns = time.perf_counter_ns() + int(kill_ms * 1_000_000)
+                target_ns = time.perf_counter_ns() + kill_ms * 1_000_000
                 rem_s = (kill_ms - 2.0) / 1000.0
                 if rem_s > 0:
                     time.sleep(rem_s)
@@ -618,6 +621,7 @@ class TortureRunner:
         acked_count = sum(1 for op in oracle.ops_by_id.values() if op.state.value == "ACKED")
         pending_count = sum(1 for op in oracle.ops_by_id.values() if op.state.value == "PENDING")
         self.total_verified_ops += acked_count
+        self.recovery_durations.append(recovery_ms)
 
         strike_us = strike_delay_ns // 1000
         self.ui.print_iteration_line(
@@ -1204,6 +1208,8 @@ class TortureRunner:
         final_sz = self.db_path.stat().st_size if self.db_path.exists() else 0
         live_k = len(self.baseline_dump)
         strike_stats = self.sniper.get_summary_stats()
+        avg_rec = sum(self.recovery_durations) / max(1, len(self.recovery_durations)) if self.recovery_durations else 0.0
+        max_rec = max(self.recovery_durations, default=0)
 
         self.ui.print_scorecard(
             iterations_passed=self.passed_iterations,
@@ -1213,6 +1219,8 @@ class TortureRunner:
             live_keys=live_k,
             strike_stats=strike_stats,
             invariants_verified=invariants,
+            avg_recovery_ms=avg_rec,
+            max_recovery_ms=max_rec,
         )
 
         print(
