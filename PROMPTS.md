@@ -233,4 +233,22 @@ This log records the core user prompts and corresponding engineering deliverable
 - **Architecture Diagrams (`diagrams/`):** Created 4 `.mmd` Mermaid source files and rendered 4 clean, scalable vector `.svg` diagrams: `components`, `write_path`, `recovery`, and `compaction`.
 - **Audit & Bug Log Alignment:** Logged BUG-005 in `docs/BUGLOG.md` and resolved open items in `docs/FORMAT.md §15`.
 
+---
+
+### 15. Live 1,000,000-Key Scale Verification & Benchmarking
+**User Prompts:**
+> "Option 2: Live 1,000,000-Key Scale Verification Run"
+> "Option 2A (Replay Benchmark): python tests/benchmark_replay.py"
+> "Option 2B: Run the live pipe torture scale mode (python torture --mode scale --seed 1 --iterations 1) proceed with this"
+
+**Key Deliverables:**
+- **Replay Benchmark Verification (`tests/benchmark_replay.py`):** Verified 1M keys in Python 3.14.2:
+  - Case A (1,000 batches $\times$ 1,000 keys): 1,000,000 keys replayed in **10.03s** (99,653 keys/s) with 200.12 MB peak RAM (down from 26.04s baseline).
+  - Case B (1,000,000 single frames): 1,000,000 keys replayed in **19.03s** (52,546 keys/s) with 212.39 MB peak RAM (down from 45.58s baseline).
+- **Live Pipe Torture Scale Mode (`python torture --mode scale --seed 1 --iterations 1`):**
+  - Streamed 100 batches of 10,000 keys (1,000,000 keys total) over binary pipe to `serve`.
+  - Executed instant SIGKILL upon the 100th ACK.
+  - Verified 100% key recovery on restart: **1,000,000 keys recovered in 1296 ms** (beating the 2,000 ms threshold).
+
+
 
