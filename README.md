@@ -10,31 +10,31 @@ An embedded, single-file, crash-safe key-value database written in pure Python, 
 There is no build step. Check the toolchain:
 
 ```
-python3 --version      # 3.14.x  (use `python` on Windows)
+python --version      # 3.14.x  (or `python3` on Linux/macOS)
 ```
 
 Run the tests (optional):
 
 ```
-python3 -m unittest discover tests
+python -m unittest discover tests
 ```
 
 ## Run
 
-From the repository root. On Linux, `./kvdb` works directly. On Windows, or if the executable bit is lost, use `python kvdb`.
+From the repository root (use `python` or `python3`):
 
 | Command | What it does |
 |---|---|
-| `./kvdb open <path> [--max-bytes N]` | Open or create the database, run recovery, print `OK keys=<n> recovery_ms=<t>` |
-| `./kvdb put <path> <key> <value>` | Store a value. Prints `OK` once it is durable |
-| `./kvdb get <path> <key>` | Print the value, or `NOTFOUND` |
-| `./kvdb del <path> <key>` | Delete a key. Deleting a missing key is not an error |
-| `./kvdb batch <path> <file>` | Apply a file of operations atomically (format below) |
-| `./kvdb dump <path> [--hex]` | Print every key and value, sorted by key. `--hex` prints `<hexkey> <hexvalue>` per line |
-| `./kvdb check <path>` | Verify file integrity, print `OK` or the reason it failed |
-| `./kvdb serve <path> [--max-bytes N]` | Long-running mode: read commands on stdin, print `ACK <id>` after each durable write |
-| `./kvdb compact <path>` | Rewrite the file with only live data so it can shrink |
-| `./kvdb checkpoint <path>` | Append an in-line snapshot frame of the live index for sub-50ms fast startup |
+| `python kvdb open <path> [--max-bytes N]` | Open or create the database, run recovery, print `OK keys=<n> recovery_ms=<t>` |
+| `python kvdb put <path> <key> <value>` | Store a value. Prints `OK` once it is durable |
+| `python kvdb get <path> <key>` | Print the value, or `NOTFOUND` |
+| `python kvdb del <path> <key>` | Delete a key. Deleting a missing key is not an error |
+| `python kvdb batch <path> <file>` | Apply a file of operations atomically (format below) |
+| `python kvdb dump <path> [--hex]` | Print every key and value, sorted by key. `--hex` prints `<hexkey> <hexvalue>` per line |
+| `python kvdb check <path>` | Verify file integrity, print `OK` or the reason it failed |
+| `python kvdb serve <path> [--max-bytes N]` | Long-running mode: read commands on stdin, print `ACK <id>` after each durable write |
+| `python kvdb compact <path>` | Rewrite the file with only live data so it can shrink |
+| `python kvdb checkpoint <path>` | Append an in-line snapshot frame of the live index for sub-50ms fast startup |
 
 `--max-bytes N` caps the file size. A write that would exceed it fails with `ERROR DISK_FULL <message>`, writes nothing, and leaves the database readable. Other errors print `ERROR <code> <message>`, and the exit code is non-zero.
 
@@ -83,17 +83,17 @@ Any failure replies `ERR <id> <code>` with code:
 ### Torture tool
 
 ```
-./torture --self-test
-./torture --iterations 500 --seed 12345
-./torture --iterations 100 --seed 999 --mode contention
-./torture --iterations 100 --seed 999 --mode large-values
-./torture --iterations 100 --seed 7   --mode compaction
-./torture --iterations 100 --seed 42  --mode recovery-crash
-./torture --iterations 1   --seed 1   --mode scale
+python torture --self-test
+python torture --iterations 500 --seed 12345
+python torture --iterations 100 --seed 999 --mode contention
+python torture --iterations 100 --seed 999 --mode large-values
+python torture --iterations 100 --seed 7   --mode compaction
+python torture --iterations 100 --seed 42  --mode recovery-crash
+python torture --iterations 1   --seed 1   --mode scale
 ```
 
 Modes: `default`, `contention`, `large-values`, `large-batches`, `compaction`, `recovery-crash`, `disk-full`, `crash-points`, `scale`.
-`./torture --self-test` runs an independent 16-scenario test suite proving that the oracle catches lost writes, partial batches, corrupted tail bytes, alien keys, invalid batch orderings, raw binary format/CRC corruptions, and live fault injections.
+`python torture --self-test` runs an independent 16-scenario test suite proving that the oracle catches lost writes, partial batches, corrupted tail bytes, alien keys, invalid batch orderings, raw binary format/CRC corruptions, and live fault injections.
 Each iteration starts `serve`, sends random operations from concurrent writers, records every ACK in its own oracle file, kills the process with SIGKILL (`TerminateProcess` on Windows) at a random moment (with microsecond-precision latency-adaptive kill strikes), then restarts it, runs `check`, and compares `dump --hex` against the oracle. It prints one line per iteration and a final pass/fail count, and stops at the first failure with expected vs found and the operation ids. When a failure occurs, the tool generates a self-contained reproducer script in `<workdir>/failure-<seed>-<iter>/reproduce.py` containing raw binary byte context inspection and an `oracle.log` timeline replay, an invariant violation report (`report.md`), and optional automatic packaging via `--zip-failure`. The seed reproduces the operation stream and the kill delays, but not the exact instruction at which a timed kill lands. The `crash-points` mode (and the `KVDB_CRASH_POINT` environment variable) makes the engine kill itself at a named point, which is deterministic. For full specification details, see [docs/TORTURE_SPEC.md](docs/TORTURE_SPEC.md).
 
 ### Diagnostic & WAL Inspector
