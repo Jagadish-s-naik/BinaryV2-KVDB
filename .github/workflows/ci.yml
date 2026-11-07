@@ -6,15 +6,24 @@ on:
   pull_request:
     branches: ["**"]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test on ${{ matrix.os }} (Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.13", "3.14"]
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONIOENCODING: "utf-8"
 
     steps:
       - name: Check out repository
@@ -24,6 +33,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
           check-latest: true
 
       - name: Verify Toolchain
@@ -33,6 +43,7 @@ jobs:
       - name: Check Syntax Compilation
         run: |
           python -m compileall src/ torture_tool/ tests/ tools/
+          python -m py_compile kvdb torture
 
       - name: Run Unit & Fuzz Test Suite
         run: |
@@ -44,11 +55,22 @@ jobs:
 
       - name: Run Fast Torture Mode Verification (Real Engine)
         run: |
-          python torture --seed 42 --iterations 5 --mode contention
-          python torture --seed 7  --iterations 3 --mode recovery-crash
-          python torture --seed 99 --iterations 3 --mode large-batches
+          python torture --seed 42 --iterations 5 --mode contention --ui plain
+          python torture --seed 7  --iterations 3 --mode recovery-crash --ui plain
+          python torture --seed 99 --iterations 3 --mode large-batches --ui plain
+          python torture --seed 123 --iterations 3 --mode fuzz-corrupt --ui plain
 
       - name: Verify Diagnostic CLI Tools
         run: |
           python tools/inspect_wal.py --help
+          python tools/inspect_wal.py torture-work/data.db --frames
 
+      - name: Upload Failure Artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-artifacts-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: |
+            torture-work/
+            *.zip
+          if-no-files-found: ignore
