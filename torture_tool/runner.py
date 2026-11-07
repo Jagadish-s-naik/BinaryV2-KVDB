@@ -1281,7 +1281,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.self_test:
-        return run_self_tests(args.kvdb)
+        return run_self_tests(args.kvdb, ui_mode=args.ui)
 
     if args.seed is None:
         parser.error("--seed is required (unless running with --self-test)")
