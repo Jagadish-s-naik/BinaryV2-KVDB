@@ -473,6 +473,7 @@ class TortureRunner:
             [sys.executable, self.kvdb_bin, "open", str(self.db_path)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
         )
         if open_res.returncode != 0 or not open_res.stdout.startswith("OK"):
@@ -499,6 +500,7 @@ class TortureRunner:
             [sys.executable, self.kvdb_bin, "check", str(self.db_path)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
         )
         if check_res.returncode != 0 or "OK" not in check_res.stdout:
@@ -534,6 +536,7 @@ class TortureRunner:
             [sys.executable, self.kvdb_bin, "dump", str(self.db_path), "--hex"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
         )
         if dump_res.returncode != 0:
@@ -602,6 +605,7 @@ class TortureRunner:
                 [sys.executable, self.kvdb_bin, "get", str(self.db_path), sample_key],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 errors="replace",
             )
             if get_res.returncode != 0 or get_res.stdout.strip() == "NOTFOUND":
@@ -787,7 +791,7 @@ class TortureRunner:
         batch_size = 10000
         for b_idx in range(total_batches):
             op_id = f"scale.b.{b_idx}"
-            sub_ops = []
+            sub_ops: list[tuple[str, str, bytes | None]] = []
             for k_idx in range(batch_size):
                 key = f"k:{b_idx}:{k_idx}"
                 val = f"v:{b_idx}:{k_idx}".encode("ascii")
@@ -815,6 +819,8 @@ class TortureRunner:
             [sys.executable, self.kvdb_bin, "open", str(self.db_path)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if open_res.returncode != 0 or not open_res.stdout.startswith("OK"):
             print(f"FAIL: open failed: {open_res.stderr}", file=sys.stderr)
@@ -839,6 +845,7 @@ class TortureRunner:
             [sys.executable, self.kvdb_bin, "check", str(self.db_path)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
         )
         if check_res.returncode != 0 or "OK" not in check_res.stdout:
@@ -882,7 +889,7 @@ class TortureRunner:
         if prior_keys:
             for idx in range(0, len(prior_keys), prior_batch_size):
                 chunk = prior_keys[idx : idx + prior_batch_size]
-                sub_ops = [("DEL", k, None) for k in chunk]
+                sub_ops: list[tuple[str, str, bytes | None]] = [("DEL", k, None) for k in chunk]
                 client.send_batch(f"shrink.prior_del.{idx}", sub_ops, writer_id=0)
 
             last_prior_id = f"shrink.prior_del.{((len(prior_keys) - 1) // prior_batch_size) * prior_batch_size}"
@@ -897,8 +904,8 @@ class TortureRunner:
         num_batches = 20
         keys_per_batch = 5000
         for b in range(num_batches):
-            sub_ops = [("PUT", f"sk:{b}:{k}", b"shrink_val") for k in range(keys_per_batch)]
-            client.send_batch(f"shrink.put.{b}", sub_ops, writer_id=0)
+            sub_ops_put: list[tuple[str, str, bytes | None]] = [("PUT", f"sk:{b}:{k}", b"shrink_val") for k in range(keys_per_batch)]
+            client.send_batch(f"shrink.put.{b}", sub_ops_put, writer_id=0)
 
         last_put_id = f"shrink.put.{num_batches - 1}"
         wait_s = time.monotonic()
@@ -912,14 +919,14 @@ class TortureRunner:
 
         # Delete all 100,000 keys and ensure prior keys are also deleted
         for b in range(num_batches):
-            sub_ops = [("DEL", f"sk:{b}:{k}", None) for k in range(keys_per_batch)]
-            client.send_batch(f"shrink.del.{b}", sub_ops, writer_id=0)
+            sub_ops_del: list[tuple[str, str, bytes | None]] = [("DEL", f"sk:{b}:{k}", None) for k in range(keys_per_batch)]
+            client.send_batch(f"shrink.del.{b}", sub_ops_del, writer_id=0)
 
         if prior_keys:
             for idx in range(0, len(prior_keys), prior_batch_size):
                 chunk = prior_keys[idx : idx + prior_batch_size]
-                sub_ops = [("DEL", k, None) for k in chunk]
-                client.send_batch(f"shrink.del_prior_cleanup.{idx}", sub_ops, writer_id=0)
+                sub_ops_cleanup: list[tuple[str, str, bytes | None]] = [("DEL", k, None) for k in chunk]
+                client.send_batch(f"shrink.del_prior_cleanup.{idx}", sub_ops_cleanup, writer_id=0)
 
         last_del_id = f"shrink.del.{num_batches - 1}"
         wait_s = time.monotonic()
@@ -950,7 +957,13 @@ class TortureRunner:
             print(f"WARN: file did not shrink under 5% of peak (peak={peak_size}, final={final_size})", file=sys.stderr)
             return False
 
-        res = subprocess.run([sys.executable, self.kvdb_bin, "check", str(self.db_path)], capture_output=True, text=True)
+        res = subprocess.run(
+            [sys.executable, self.kvdb_bin, "check", str(self.db_path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         return res.returncode == 0
 
     def run_disk_full_e5_check(self) -> bool:
@@ -1110,19 +1123,19 @@ class TortureRunner:
             f'            print(" ", l)\n'
             f'        print("--------------------------------------------------------------")\n\n'
             f'    print("[CLI Step 1] Running kvdb open...")\n'
-            f'    r1 = subprocess.run([sys.executable, KVDB, "open", str(DB_FILE)], capture_output=True, text=True)\n'
+            f'    r1 = subprocess.run([sys.executable, KVDB, "open", str(DB_FILE)], capture_output=True, text=True, encoding="utf-8", errors="replace")\n'
             f'    print("  Exit code:", r1.returncode)\n'
             f'    print("  stdout:   ", r1.stdout.strip())\n'
             f'    if r1.stderr.strip():\n'
             f'        print("  stderr:   ", r1.stderr.strip())\n\n'
             f'    print("[CLI Step 2] Running kvdb check...")\n'
-            f'    r2 = subprocess.run([sys.executable, KVDB, "check", str(DB_FILE)], capture_output=True, text=True)\n'
+            f'    r2 = subprocess.run([sys.executable, KVDB, "check", str(DB_FILE)], capture_output=True, text=True, encoding="utf-8", errors="replace")\n'
             f'    print("  Exit code:", r2.returncode)\n'
             f'    print("  stdout:   ", r2.stdout.strip())\n'
             f'    if r2.stderr.strip():\n'
             f'        print("  stderr:   ", r2.stderr.strip())\n\n'
             f'    print("[CLI Step 3] Running kvdb dump --hex...")\n'
-            f'    r3 = subprocess.run([sys.executable, KVDB, "dump", str(DB_FILE), "--hex"], capture_output=True, text=True)\n'
+            f'    r3 = subprocess.run([sys.executable, KVDB, "dump", str(DB_FILE), "--hex"], capture_output=True, text=True, encoding="utf-8", errors="replace")\n'
             f'    matched = False\n'
             f'    for line in r3.stdout.splitlines():\n'
             f'        if "{escaped_key}" in line or "{escaped_key}".encode().hex() in line:\n'

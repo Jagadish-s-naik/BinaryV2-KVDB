@@ -257,7 +257,14 @@ def run_self_tests(kvdb_bin: str | None = None) -> int:
                 "--kill-max-ms",
                 "50",
             ]
-            res = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            res = subprocess.run(
+                cmd,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
             return res.returncode
 
         # Test 12: Normal baseline engine passes (Real production engine)
