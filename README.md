@@ -34,6 +34,7 @@ From the repository root. On Linux, `./kvdb` works directly. On Windows, or if t
 | `./kvdb check <path>` | Verify file integrity, print `OK` or the reason it failed |
 | `./kvdb serve <path> [--max-bytes N]` | Long-running mode: read commands on stdin, print `ACK <id>` after each durable write |
 | `./kvdb compact <path>` | Rewrite the file with only live data so it can shrink |
+| `./kvdb checkpoint <path>` | Append an in-line snapshot frame of the live index for sub-50ms fast startup |
 
 `--max-bytes N` caps the file size. A write that would exceed it fails with `ERROR DISK_FULL <message>`, writes nothing, and leaves the database readable. Other errors print `ERROR <code> <message>`, and the exit code is non-zero.
 
@@ -67,6 +68,7 @@ READY keys=<n> recovery_ms=<t>
 | `BATCH <id> <n>` then `n` lines of `put <hexkey> <hexval>` or `del <hexkey>` | `ACK <id>` |
 | `GET <id> <hexkey>` | `VAL <id> <hexval>` or `NOTFOUND <id>` |
 | `COMPACT <id>` | `ACK <id>` |
+| `CHECKPOINT <id>` | `ACK <id>` |
 | `QUIT` | (exits 0) |
 
 Any failure replies `ERR <id> <code>` with code:

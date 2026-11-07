@@ -141,7 +141,7 @@ class TestCompactionCrashPoints(unittest.TestCase):
             db.put(b"k2", b"v2")
 
         rc = self._run_script_with_cp("compact_after_tmp:1", "db.compact()")
-        self.assertEqual(rc, 137)
+        self.assertIn(rc, (137, -9))
 
         # Reopen: path.compact is purged, old file intact, gen is 1
         with DB.open(self.db_path) as db:
@@ -156,14 +156,14 @@ class TestCompactionCrashPoints(unittest.TestCase):
             db.put(b"k1", b"v1")
 
         rc = self._run_script_with_cp("compact_before_replace:1", "db.compact()")
-        self.assertEqual(rc, 137)
+        self.assertIn(rc, (137, -9))
         with DB.open(self.db_path) as db:
             self.assertEqual(db.generation, 1)
             self.assertEqual(db.get(b"k1"), b"v1")
 
         # C4 after replace: new file in place! Generation is 2!
         rc = self._run_script_with_cp("compact_after_replace:1", "db.compact()")
-        self.assertEqual(rc, 137)
+        self.assertIn(rc, (137, -9))
         with DB.open(self.db_path) as db:
             self.assertEqual(db.generation, 2)
             self.assertEqual(db.get(b"k1"), b"v1")

@@ -48,9 +48,10 @@ def compact(db: DB) -> None:
         compact_offset = len(header_bytes)
 
         # Step 2: Write all live keys as frames of up to 1,000 puts each
+        # Stream read values in physical disk offset order to eliminate random seek thrashing
         new_index: dict[bytes, int] = {}
         batch_ops: list[tuple[int, bytes, bytes]] = []
-        keys_to_write = sorted(db._index.keys())
+        items_by_offset = sorted(db._index.items(), key=lambda kv: unpack_val(kv[1])[0])
 
         def flush_batch() -> None:
             nonlocal compact_offset
@@ -78,8 +79,7 @@ def compact(db: DB) -> None:
             compact_offset += frame_len
             batch_ops.clear()
 
-        for k in keys_to_write:
-            packed = db._index[k]
+        for k, packed in items_by_offset:
             val_offset, val_len = unpack_val(packed)
             if val_len == 0:
                 val = b""

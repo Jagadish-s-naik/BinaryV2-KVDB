@@ -34,6 +34,7 @@ The client must not send commands before `READY`. If the file cannot be opened, 
 | `BATCH <id> <n>` followed by exactly `n` lines, each `put <hexkey> <hexval>` or `del <hexkey>` | `ACK <id>` |
 | `GET <id> <hexkey>` | `VAL <id> <hexval>` or `NOTFOUND <id>` |
 | `COMPACT <id>` | `ACK <id>` |
+| `CHECKPOINT <id>` | `ACK <id>` |
 | `QUIT` | none; the process exits 0 |
 
 Failure reply for any command: `ERR <id> <code>`. Codes:
@@ -73,6 +74,7 @@ All commands print to stdout; exit code 0 means success.
 | `check <path>` | `OK`, or `FAIL <reason>` | 0 only if `OK`. **Read-only: must not modify the file** |
 | `dump <path> --hex` | one line per key, sorted by key: `<hexkey> <hexval>`, `-` for an empty value | 0 |
 | `compact <path>` | `OK` | 0 |
+| `checkpoint <path>` | `OK` | 0 |
 
 `open` runs full recovery (including truncating a torn tail), so it may modify the file. `check` and `dump` must not.
 

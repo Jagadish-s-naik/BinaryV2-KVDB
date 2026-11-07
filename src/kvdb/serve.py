@@ -64,6 +64,9 @@ def run_serve(path: str, max_bytes: int | None = None) -> NoReturn:
                 elif cmd == "COMPACT":
                     db.compact()
                     reply(b"ACK " + op_id + b"\n")
+                elif cmd == "CHECKPOINT":
+                    db.checkpoint()
+                    reply(b"ACK " + op_id + b"\n")
             except DiskFullError:
                 reply(b"ERR " + op_id + b" DISK_FULL\n")
             except ValueError:
@@ -140,6 +143,14 @@ def run_serve(path: str, max_bytes: int | None = None) -> NoReturn:
                 continue
             _, op_id = parts
             work_queue.put(("COMPACT", op_id, ()))
+
+        elif cmd == b"CHECKPOINT":
+            if len(parts) != 2:
+                op_id = parts[1] if len(parts) > 1 else b"?"
+                reply(b"ERR " + op_id + b" PARSE\n")
+                continue
+            _, op_id = parts
+            work_queue.put(("CHECKPOINT", op_id, ()))
 
         elif cmd == b"BATCH":
             if len(parts) != 3:

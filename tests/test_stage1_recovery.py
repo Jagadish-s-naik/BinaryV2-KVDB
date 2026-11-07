@@ -221,7 +221,7 @@ class TestRecoveryScenarios(unittest.TestCase):
         import subprocess
         proc = subprocess.Popen([sys.executable, "-c", script], env=env)
         proc.wait(timeout=5)
-        self.assertEqual(proc.returncode, 137)
+        self.assertIn(proc.returncode, (137, -9))
         # File should still have torn tail
         self.assertEqual(os.path.getsize(self.db_path), full_len)
 
@@ -229,7 +229,7 @@ class TestRecoveryScenarios(unittest.TestCase):
         env["KVDB_CRASH_POINT"] = "recovery_after_truncate:1"
         proc = subprocess.Popen([sys.executable, "-c", script], env=env)
         proc.wait(timeout=5)
-        self.assertEqual(proc.returncode, 137)
+        self.assertIn(proc.returncode, (137, -9))
         # File should now be truncated to clean_len
         self.assertEqual(os.path.getsize(self.db_path), clean_len)
 

@@ -13,7 +13,7 @@ The byte-level format lives in [`docs/FORMAT.md`](docs/FORMAT.md) and is not rep
 ```mermaid
 flowchart TB
     subgraph Clients["Callers"]
-        CLI["CLI: put/get/del/batch/dump/check/open"]
+        CLI["CLI: put/get/del/batch/dump/check/open/checkpoint"]
         SERVE["serve: 8 worker threads, ACK printer"]
         LIB["Library API"]
     end
@@ -50,7 +50,10 @@ flowchart TB
     CP -. "..." .-> REC
 ```
 
-**Locks:** exactly one, `DB._lock` (a `threading.Lock`). Every public operation, including `get`, `compact` and `close`, takes it. `serve` has a second lock that only serialises writes to stdout so ACK lines never interleave. It protects no database state.
+**Locks:**
+- `DB._lock` (a `threading.RLock`): protects in-memory index, `_end_offset`, `get`, `keys`, `items`, and coordinates with compaction and write flushes.
+- `DB._flusher_lock` & `DB._queue_lock`: coordinates Group Commit. Callers validate and build frames concurrently, queueing them into `_commit_queue`. An elected leader flusher acquires `_lock`, writes the pending frames sequentially, and issues a single `os.fsync(fd)` committing all queued writes together.
+- `serve` has a dedicated `stdout_lock` that serialises writes to stdout so ACK lines never interleave. It protects no database state.
 
 ### 1.2 File layout
 
@@ -59,33 +62,34 @@ flowchart TB
 | magic 8 | version 4 | generation 8 | header_crc 4  (CRC over first 20) |
 +--------------------------------------------------------------------------+
 +--- Frame (repeated) --------------------------------------------------------+
-| frame_len 4 | crc32 4 | kind 1 | op_count 4 | op ... op                       |
+| frame_len 4 | crc32 4 | kind 1 | count 4 | payload entries ...                |
 |             |         |<------------ payload = frame_len bytes ------------>|
 | crc32 covers: frame_len (4 bytes) || payload                                 |
 +------------------------------------------------------------------------------+
-  op = type 1 | key_len 2 | val_len 4 | key | value
+  kind = 1 (ops): op_count 4 | op = type 1 | key_len 2 | val_len 4 | key | value
+  kind = 2 (checkpoint): entry_count 4 | keys_bytes_total 4 | index_table (entry_count * 10B <QH: packed 8B, key_len 2B) | keys_pool (contiguous key bytes)
 
 No separate commit marker: a frame whose CRC validates IS committed.
-Index is not stored on disk (v1); it is rebuilt by replaying frames.
+Recovery can replay operational frames (kind = 1) or fast-forward from an in-line checkpoint frame (kind = 2).
 ```
 
 ### 1.3 Write ordering (numbered)
 
 ```mermaid
 flowchart TB
-    S0["0. acquire GLOBAL LOCK"] --> S1["1. validate inputs<br/>fail: ValueError, nothing written"]
-    S1 --> S2["2. build the complete frame in memory<br/>frame_len, CRC, payload"]
-    S2 --> S3["3. disk-full check<br/>fail: DiskFullError, nothing written"]
-    S3 --> S4["4. os.lseek to end_offset, os.write the whole frame<br/>(loop on short writes)"]
-    S4 --> S5["5. os.fsync(fd)<br/>THE DURABILITY POINT"]
-    S5 --> S6["6. update index + end_offset<br/>(apply ops in order)"]
-    S6 --> S7["7. release lock"]
-    S7 --> S8["8. return success: serve prints ACK id and flushes stdout"]
+    S1["1. validate inputs & build frame in memory<br/>(concurrent across threads, lock-free)"] --> S0["2. enqueue write & elect flusher leader"]
+    S0 --> S2["3. flusher acquires GLOBAL LOCK (_lock)"]
+    S2 --> S3["4. disk-full check<br/>fail: DiskFullError, nothing written"]
+    S3 --> S4["5. os.lseek to end_offset, os.write frame(s)<br/>(loop on short writes)"]
+    S4 --> S5["6. os.fsync(fd)<br/>THE DURABILITY POINT (group commit)"]
+    S5 --> S6["7. update index + end_offset<br/>(apply ops in order for each frame)"]
+    S6 --> S7["8. release lock & signal waiting callers"]
+    S7 --> S8["9. return success: serve prints ACK id and flushes stdout"]
     S4 -. "write error" .-> F1["ftruncate(end_offset); re-raise<br/>if truncate fails: POISON"]
     S5 -. "fsync error" .-> F2["POISON: never retry fsync"]
 ```
 
-Crash-point hooks sit between these steps: `before_write` (after 3), `mid_write` (inside 4), `after_write_before_fsync` (after 4), `after_fsync_before_index` (after 5), `after_fsync_before_ack` (after 6). See FORMAT 14.
+Crash-point hooks sit at exact durability barriers: `before_write` (after 4), `mid_write` (inside 5), `after_write_before_fsync` (after 5), `after_fsync_before_index` (after 6), `after_fsync_before_ack` (after 7). See FORMAT 14.
 
 ### 1.4 Recovery flow
 
@@ -97,14 +101,20 @@ flowchart TB
     N1 --> READY
     O3 -- no --> O4{"header valid?<br/>magic, version, header_crc"}
     O4 -- no --> ERR["raise error, file untouched"]
-    O4 -- yes --> O5["scan frames from offset 24"]
-    O5 --> O6{"next frame valid?<br/>FORMAT 4, rules 1-8"}
-    O6 -- yes --> O7["apply its ops in order to index"]
-    O7 --> O5
-    O6 -- "no, or end of file" --> O8{"stop offset < file size?"}
-    O8 -- yes --> O9["ftruncate to stop offset, fsync"]
-    O8 -- no --> READY
-    O9 --> READY["READY: set end_offset, accept calls"]
+    O4 -- yes --> O5["Pass 1: boundary & CRC scan from offset 24"]
+    O5 --> O6{"frame CRC & bounds valid?"}
+    O6 -- yes --> O7{"kind = 2?"}
+    O7 -- yes --> O7A["record last_checkpoint_offset"]
+    O7 -- no --> O5
+    O7A --> O5
+    O6 -- "no or EOF" --> O8{"stopping_offset < file_size?"}
+    O8 -- yes --> O9["ftruncate to stopping_offset, fsync"]
+    O8 -- no --> P2
+    O9 --> P2{"last_checkpoint_offset exists?"}
+    P2 -- yes --> P2A["Pass 2: seek to last_checkpoint_offset<br/>unpack checkpoint + subsequent ops into index"]
+    P2 -- no --> P2B["Pass 2: replay all frames from offset 24<br/>into index"]
+    P2A --> READY["READY: set end_offset, accept calls"]
+    P2B --> READY
 ```
 
 ### 1.5 Compaction flow
@@ -226,7 +236,7 @@ A batch is **one frame**, so there is no separate commit marker. B1 and B2 descr
 |---|---|---|---|---|
 | F1 | Any of the above | Every state is covered by the frame rules; the oracle checks the invariant after every kill | torture tool, `src/kvdb/recovery.py:recover` | `torture --iterations 50 --seed 12345 --mode default` & `tests/test_all_modes.py` (all modes verified, 2026-11-06) |
 | F2 | The file after each kill is a valid prefix, possibly a shorter one | Recovery is idempotent (its only write is a truncate to a frame boundary) | `src/kvdb/recovery.py:recover` | `torture --iterations 15 --seed 42 --mode recovery-crash`, 2026-11-06, 45 chained recovery kills passed |
-| F3 | A log of 1,000,000 keys' frames | Full replay with a chunked, `memoryview` + `struct.unpack_from` scan. Measured 26.04s (Case A) and 45.58s (Case B) on Python 3.14. Exceeds 1.5s, indicating checkpoint frames (`kind = 2`) would be beneficial for extreme key counts. | `src/kvdb/recovery.py:recover` | `tests/benchmark_replay.py`, 2026-11-06, Case A 1,000 batches = 26.04s, Peak RAM = 200.1 MB; Case B 1M frames = 45.58s, Peak RAM = 212.4 MB |
+| F3 | A log of 1,000,000 keys' frames | Replay with Option A Checkpoint Frame (`kind = 2`) & periodic auto-checkpointing: two-pass fast-forward with C-bulk `struct.iter_unpack` (<QH) index table and streamlined op unpack. Cold startup recovers 1,000,000 keys in 1,263–1,370 ms engine recovery time, comfortably beating the < 1.500s threshold of FORMAT.md §13. | `src/kvdb/recovery.py:recover`, `src/kvdb/frame.py:parse_frame`, `src/kvdb/db.py:DB.checkpoint`, `src/kvdb/db.py:DB._maybe_auto_checkpoint` | `tests/test_stage6_checkpoint.py`, 2026-11-07; `torture --mode scale --seed 1 --iterations 1` (1,370 ms recovery); `tools/bench_1m.py` (1,263 ms recovery) |
 | F4 | The last frame is 1 byte short | Fails FORMAT 4 rule 3, so it is truncated and open() succeeds. **We lose that whole last frame** (which could have been ACKed, since the cut was made by hand), not only unacknowledged data. This is the only loss possible from a tail cut | `src/kvdb/recovery.py:recover` | `tests/test_fuzz_recovery.py::test_fuzz_torn_tail_single_byte_cut`, 2026-11-06 |
 
 ---

@@ -174,3 +174,15 @@ def cmd_compact(path: str) -> int:
     except Exception as e:
         print(f"ERROR INTERNAL {e}")
         return 1
+
+
+def cmd_checkpoint(path: str) -> int:
+    """Write an in-line checkpoint frame snapshotting the in-memory index."""
+    try:
+        with DB.open(path) as db:
+            db.checkpoint()
+        print("OK")
+        return 0
+    except Exception as e:
+        print(f"ERROR INTERNAL {e}")
+        return 1

@@ -237,14 +237,14 @@ class TestDBCrashPoints(unittest.TestCase):
     def test_crash_before_write_a1(self):
         # A1: Process killed before write touches disk
         rc = self._run_with_crash_point("before_write:1", "db.put(b'k', b'v')")
-        self.assertEqual(rc, 137)
+        self.assertIn(rc, (137, -9))
         with DB.open(self.db_path) as db:
             self.assertIsNone(db.get(b'k'))
 
     def test_crash_mid_write_a2(self):
         # A2: Process killed mid-write -> torn tail on disk
         rc = self._run_with_crash_point("mid_write:1", "db.put(b'k', b'v'*100)")
-        self.assertEqual(rc, 137)
+        self.assertIn(rc, (137, -9))
         # Reopening executes recovery and truncates torn bytes
         with DB.open(self.db_path) as db:
             self.assertIsNone(db.get(b'k'))
@@ -252,7 +252,7 @@ class TestDBCrashPoints(unittest.TestCase):
     def test_crash_after_fsync_before_index_a4(self):
         # A4: Durable on disk, killed before index updated
         rc = self._run_with_crash_point("after_fsync_before_index:1", "db.put(b'durable', b'yes')")
-        self.assertEqual(rc, 137)
+        self.assertIn(rc, (137, -9))
         # Reopening recovers the durable frame from disk!
         with DB.open(self.db_path) as db:
             self.assertEqual(db.get(b'durable'), b'yes')
@@ -260,7 +260,7 @@ class TestDBCrashPoints(unittest.TestCase):
     def test_crash_after_fsync_before_ack_a5(self):
         # A5: Durable on disk, killed before ACK sent
         rc = self._run_with_crash_point("after_fsync_before_ack:1", "db.put(b'durable2', b'yes2')")
-        self.assertEqual(rc, 137)
+        self.assertIn(rc, (137, -9))
         with DB.open(self.db_path) as db:
             self.assertEqual(db.get(b'durable2'), b'yes2')
 

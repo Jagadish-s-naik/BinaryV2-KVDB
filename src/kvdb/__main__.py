@@ -7,6 +7,7 @@ import sys
 from kvdb.cli import (
     cmd_batch,
     cmd_check,
+    cmd_checkpoint,
     cmd_compact,
     cmd_del,
     cmd_dump,
@@ -68,6 +69,10 @@ def main(argv: list[str] | None = None) -> int:
     compact_p = subparsers.add_parser("compact")
     compact_p.add_argument("path")
 
+    # checkpoint <path>
+    checkpoint_p = subparsers.add_parser("checkpoint")
+    checkpoint_p.add_argument("path")
+
     args = parser.parse_args(argv)
 
     if args.command == "serve":
@@ -88,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_check(args.path)
     elif args.command == "compact":
         return cmd_compact(args.path)
+    elif args.command == "checkpoint":
+        return cmd_checkpoint(args.path)
 
     return 0
 

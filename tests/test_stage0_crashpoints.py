@@ -50,8 +50,8 @@ class TestCrashPoints(unittest.TestCase):
             env=env,
         )
         stdout, stderr = proc.communicate(timeout=5)
-        # On Windows or Linux, exit code must be 137
-        self.assertEqual(proc.returncode, 137)
+        # On Windows returncode is 137; on Linux (SIGKILL) it is -9
+        self.assertIn(proc.returncode, (137, -9))
         self.assertIn(b"FIRST_OK", stdout)
         self.assertNotIn(b"SHOULD_NOT_REACH", stdout)
 

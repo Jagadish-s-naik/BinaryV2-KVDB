@@ -484,36 +484,59 @@ def validate_raw_binary_db(db_path: Path | str, strict_magic: bool = False) -> t
             return False, f"Frame {frame_index} at offset {offset} payload length {frame_len} < 5"
 
         kind = payload[0]
-        if kind != 1:
-            return False, f"Frame {frame_index} at offset {offset} unexpected kind {kind} (expected 1)"
+        if kind == 1:
+            op_count = struct.unpack("<I", payload[1:5])[0]
+            p_off = 5
+            for op_idx in range(op_count):
+                if p_off + 7 > frame_len:
+                    return False, f"Frame {frame_index} op {op_idx} header truncated within payload"
 
-        op_count = struct.unpack("<I", payload[1:5])[0]
-        p_off = 5
-        for op_idx in range(op_count):
-            if p_off + 7 > frame_len:
-                return False, f"Frame {frame_index} op {op_idx} header truncated within payload"
+                op_type = payload[p_off]
+                if op_type not in (1, 2):
+                    return False, f"Frame {frame_index} op {op_idx} invalid op_type {op_type}"
 
-            op_type = payload[p_off]
-            if op_type not in (1, 2):
-                return False, f"Frame {frame_index} op {op_idx} invalid op_type {op_type}"
+                k_len = struct.unpack("<H", payload[p_off + 1 : p_off + 3])[0]
+                if not (1 <= k_len <= 1024):
+                    return False, f"Frame {frame_index} op {op_idx} key_len {k_len} out of bounds [1, 1024]"
 
-            k_len = struct.unpack("<H", payload[p_off + 1 : p_off + 3])[0]
-            if not (1 <= k_len <= 1024):
-                return False, f"Frame {frame_index} op {op_idx} key_len {k_len} out of bounds [1, 1024]"
+                v_len = struct.unpack("<I", payload[p_off + 3 : p_off + 7])[0]
+                if op_type == 2 and v_len != 0:
+                    return False, f"Frame {frame_index} delete op {op_idx} has non-zero val_len {v_len}"
+                if op_type == 1 and v_len > 1_048_576:
+                    return False, f"Frame {frame_index} put op {op_idx} val_len {v_len} exceeds 1MB"
 
-            v_len = struct.unpack("<I", payload[p_off + 3 : p_off + 7])[0]
-            if op_type == 2 and v_len != 0:
-                return False, f"Frame {frame_index} delete op {op_idx} has non-zero val_len {v_len}"
-            if op_type == 1 and v_len > 1_048_576:
-                return False, f"Frame {frame_index} put op {op_idx} val_len {v_len} exceeds 1MB"
+                if p_off + 7 + k_len + v_len > frame_len:
+                    return False, f"Frame {frame_index} op {op_idx} payload overflow"
 
-            if p_off + 7 + k_len + v_len > frame_len:
-                return False, f"Frame {frame_index} op {op_idx} payload overflow"
+                p_off += 7 + k_len + v_len
 
-            p_off += 7 + k_len + v_len
+            if p_off != frame_len:
+                return False, f"Frame {frame_index} at offset {offset} has {frame_len - p_off} unparsed trailing payload bytes"
 
-        if p_off != frame_len:
-            return False, f"Frame {frame_index} at offset {offset} has {frame_len - p_off} unparsed trailing payload bytes"
+        elif kind == 2:
+            if frame_len < 9:
+                return False, f"Frame {frame_index} checkpoint payload too short ({frame_len} < 9)"
+            entry_count, keys_bytes_total = struct.unpack("<II", payload[1:9])
+            expected_table_len = 10 * entry_count
+            if 9 + expected_table_len + keys_bytes_total != frame_len:
+                return False, f"Frame {frame_index} checkpoint size mismatch: 9 + {expected_table_len} + {keys_bytes_total} != {frame_len}"
+
+            table_bytes = payload[9 : 9 + expected_table_len]
+            k_pos = 0
+            for entry_idx in range(entry_count):
+                rec_off = entry_idx * 10
+                packed, k_len = struct.unpack("<QH", table_bytes[rec_off : rec_off + 10])
+                if not (1 <= k_len <= 1024):
+                    return False, f"Frame {frame_index} checkpoint entry {entry_idx} key_len {k_len} out of bounds"
+                if (packed & 0xFFFFFF) > 1_048_576:
+                    return False, f"Frame {frame_index} checkpoint entry {entry_idx} val_len exceeds 1MB"
+                k_pos += k_len
+
+            if k_pos != keys_bytes_total:
+                return False, f"Frame {frame_index} checkpoint keys_bytes_total mismatch ({k_pos} != {keys_bytes_total})"
+
+        else:
+            return False, f"Frame {frame_index} at offset {offset} unexpected kind {kind} (expected 1 or 2)"
 
         offset += 8 + frame_len
         frame_index += 1

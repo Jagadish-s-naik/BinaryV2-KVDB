@@ -54,11 +54,11 @@ The CRC covers the length field too, so a corrupted length is caught by the CRC,
 
 | Size | Field      | Meaning                                              |
 |-----:|------------|------------------------------------------------------|
-| 1    | `kind`     | `1` = ops frame. `2` = reserved for checkpoint (not used in v1). |
-| 4    | `op_count` | Number of ops that follow                            |
-| ...  | `ops`      | `op_count` ops, back to back                         |
+| 1    | `kind`     | `1` = ops frame. `2` = checkpoint frame.             |
+| 4    | `count`    | If kind=1: `op_count`. If kind=2: `entry_count`.     |
+| ...  | `data`     | If kind=1: `op_count` ops. If kind=2: `keys_bytes_total` (4B) + index table + keys pool. |
 
-### 3.4 Op
+### 3.4 Op (kind = 1)
 
 | Size    | Field     | Meaning                                       |
 |--------:|-----------|-----------------------------------------------|
@@ -69,6 +69,20 @@ The CRC covers the length field too, so a corrupted length is caught by the CRC,
 | val_len | `value`   |                                               |
 
 A put with an empty value (`val_len = 0`) is still a put. A delete is identified by `type`, never by an empty value.
+
+### 3.4.1 Checkpoint Payload (kind = 2)
+
+A checkpoint frame captures a durable point-in-time snapshot of the in-memory index using a split fixed-record table and contiguous string pool layout for C-bulk decoding (`struct.iter_unpack`):
+
+| Size    | Field              | Meaning                                            |
+|--------:|--------------------|----------------------------------------------------|
+| 1       | `kind`             | `2` (uint8)                                        |
+| 4       | `entry_count`      | Number of index entries (0 to 2,000,000) (uint32)  |
+| 4       | `keys_bytes_total` | Total byte length of keys string pool (uint32)     |
+| 10 * entry_count | `index_table` | Array of `<QH` records (`packed: uint64`, `key_len: uint16`) |
+| keys_bytes_total | `keys_pool`  | Contiguous raw key bytes in matching order        |
+
+`packed` encodes `(val_offset << 24) | (val_len & 0xFFFFFF)`. Decoding uses `val_offset = packed >> 24` and `val_len = packed & 0xFFFFFF`.
 
 ### 3.5 Worked example
 
@@ -102,13 +116,14 @@ Use this as a test vector for your parser. Check it against a hex dump of a real
 A frame starting at offset `p` is **valid** only if **all** of these hold. If any fails, the frame is a torn tail.
 
 1. At least 8 bytes remain after `p` (room for `frame_len` and `crc32`).
-2. `13 <= frame_len <= 268,435,456` (256 MiB). 13 is the smallest legal payload: 1 kind + 4 op_count + one op of 8 bytes (1 + 2 + 4 + a 1-byte key).
+2. `5 <= frame_len <= 268,435,456` (256 MiB). Smallest legal payload: kind (1B) + count (4B). For kind=1 with 1 op, minimum is 13 bytes.
 3. `p + 8 + frame_len <= file_size`.
 4. The CRC matches.
-5. `kind == 1`.
-6. `1 <= op_count <= 10,000`.
-7. The ops parse **exactly** to the end of the payload, with no bytes missing and none left over.
-8. Every op has `type` 1 or 2, `1 <= key_len <= 1024`, `val_len <= 1,048,576`, and `val_len == 0` for deletes.
+5. `kind in (1, 2)`.
+6. If `kind == 1`: `1 <= op_count <= 10,000`. If `kind == 2`: `0 <= entry_count <= 2,000,000`.
+7. The ops or entries parse **exactly** to the end of the payload, with no bytes missing and none left over.
+8. If `kind == 1`: every op has `type` 1 or 2, `1 <= key_len <= 1024`, `val_len <= 1,048,576`, and `val_len == 0` for deletes.
+   If `kind == 2`: every entry has `1 <= key_len <= 1024`, `val_len <= 1,048,576`, and `val_offset >= 24` (or 0 if `val_len == 0`).
 
 **Why rule 2 matters:** a file extended with zeros reads as `frame_len = 0, crc32 = 0`, and the CRC32 of empty input is 0, so without a minimum length a block of zeros would "validate."
 
@@ -201,13 +216,16 @@ If `fsync` fails, or a cleanup `ftruncate` fails, the instance sets `poisoned = 
  2. if path is missing or 0 bytes: create a new database (section 8.1)
  3. read the header; wrong magic -> error "not a kvdb file", file untouched;
     bad header_crc or unsupported version -> error, file untouched
- 4. scan frames from offset 24:
-      read in 16 MiB chunks, parse with struct.unpack_from on a memoryview
-      for each frame, check validity rules (section 4)
-      valid   -> apply its ops, in order, to the index
-      invalid -> stop
- 5. if the stopping offset < file_size: ftruncate(fd, stopping_offset), fsync
- 6. set end_offset, ready
+ 4. two-phase scan:
+      Pass 1 (boundary & CRC scan): scan from offset 24 in 16 MiB chunks, check length, bounds, CRC32, and kind in (1, 2)
+             track last_checkpoint_offset when kind = 2
+             stop at first invalid frame or EOF -> stopping_offset
+ 5. if stopping_offset < file_size: ftruncate(fd, stopping_offset), fsync
+ 6. Pass 2 (targeted index population):
+      if last_checkpoint_offset exists: seek to last_checkpoint_offset, unpack checkpoint snapshot into index,
+      and replay any subsequent operational frames up to stopping_offset
+      otherwise: replay all frames from offset 24 to stopping_offset
+ 7. set end_offset, ready
 ```
 
 ### 8.1 Creating a new database
@@ -285,8 +303,11 @@ On every `open()`, `path.compact` and `path.init` are deleted unconditionally. T
 
 ## 11. Concurrency
 
-- One global `threading.Lock` covers put, delete, batch, get, compact and close.
-- Writes are therefore serialised: frames never interleave, and a reader sees the state before or after a batch, never between.
+- A global `threading.RLock` (`_lock`) covers `get`, `compact`, and in-memory index updates, ensuring consistent point-in-time reads and atomic compaction.
+- High-throughput write concurrency is coordinated via group commit (`_flusher_lock` and `_queue_lock`):
+  - Concurrent writers encode independent frames in memory concurrently without lock contention.
+  - An elected group flusher acquires `_lock`, writes pending frames back-to-back, and issues a single `os.fsync(fd)` committing the entire group.
+  - Writes are strictly serialized to disk: frames never interleave, and readers see state before or after a frame/batch, never in between.
 - No cross-process locking in v1 (see Limitations).
 
 ---

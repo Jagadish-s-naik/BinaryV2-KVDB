@@ -6,14 +6,20 @@ import os
 import struct
 import sys
 import time
+import zlib
 from typing import NamedTuple
 
 from kvdb.crashpoints import crash_point
 from kvdb.errors import CorruptFileError
 from kvdb.frame import (
+    FRAME_HDR_STRUCT,
     HEADER_SIZE,
-    OP_TYPE_PUT,
+    KIND_CHECKPOINT,
+    KIND_OPS,
+    MAX_PAYLOAD_LEN,
+    MIN_CHECKPOINT_PAYLOAD_LEN,
     OP_TYPE_DEL,
+    OP_TYPE_PUT,
     ParsedOp,
     encode_header,
     parse_frame,
@@ -108,10 +114,102 @@ def init_db(path: str | os.PathLike) -> None:
             pass
 
 
+def _scan_boundaries(fd: int, file_size: int) -> tuple[int, int | None]:
+    """Pass 1: Fast boundary and CRC32 scan from HEADER_SIZE to EOF.
+    
+    Identifies stopping_offset (where valid frames end) and last_checkpoint_offset (if any kind=2 frame exists).
+    Does NOT decode individual ops or allocate dictionary keys, running at sequential memory/I/O speed.
+    """
+    os.lseek(fd, HEADER_SIZE, os.SEEK_SET)
+    buf = bytearray()
+    buf_start_file_offset = HEADER_SIZE
+    stopping_offset = HEADER_SIZE
+    last_checkpoint_offset: int | None = None
+    scan_done = False
+
+    while not scan_done:
+        read_chunk = os.read(fd, CHUNK_SIZE)
+        if read_chunk:
+            buf.extend(read_chunk)
+
+        eof_reached = len(read_chunk) == 0
+        buf_pos = 0
+
+        while True:
+            frame_file_offset = buf_start_file_offset + buf_pos
+
+            # Rule 1: Need at least 8 bytes for length & crc
+            if buf_pos + 8 > len(buf):
+                if eof_reached:
+                    stopping_offset = frame_file_offset
+                    scan_done = True
+                    break
+                else:
+                    break
+
+            frame_len, expected_crc = FRAME_HDR_STRUCT.unpack_from(buf, buf_pos)
+
+            # Rule 2: Payload bounds check
+            if not (MIN_CHECKPOINT_PAYLOAD_LEN <= frame_len <= MAX_PAYLOAD_LEN):
+                stopping_offset = frame_file_offset
+                scan_done = True
+                break
+
+            needed = 8 + frame_len
+            if buf_pos + needed > len(buf):
+                if frame_file_offset + needed > file_size or eof_reached:
+                    stopping_offset = frame_file_offset
+                    scan_done = True
+                    break
+                else:
+                    break
+
+            # Rule 4: CRC verification over length (4B) and payload
+            len_bytes = buf[buf_pos : buf_pos + 4]
+            payload_mv = memoryview(buf)[buf_pos + 8 : buf_pos + needed]
+            calc_crc = zlib.crc32(payload_mv, zlib.crc32(len_bytes)) & 0xFFFFFFFF
+            kind = payload_mv[0]
+            del payload_mv
+
+            if calc_crc != expected_crc:
+                stopping_offset = frame_file_offset
+                scan_done = True
+                break
+
+            # Rule 5: kind verification
+            if kind not in (KIND_OPS, KIND_CHECKPOINT):
+                stopping_offset = frame_file_offset
+                scan_done = True
+                break
+
+            if kind == KIND_CHECKPOINT:
+                last_checkpoint_offset = frame_file_offset
+
+            buf_pos += needed
+            stopping_offset = frame_file_offset + needed
+
+        if scan_done:
+            break
+
+        if eof_reached and buf_pos == len(buf):
+            break
+
+        if buf_pos == len(buf):
+            buf.clear()
+        elif buf_pos > 0:
+            del buf[:buf_pos]
+        buf_start_file_offset += buf_pos
+
+    return stopping_offset, last_checkpoint_offset
+
+
 def recover(fd: int, file_size: int) -> RecoveryResult:
     """Scan and recover the database from an open file descriptor.
     
-    Applies valid frames to in-memory index and truncates any torn tail.
+    Uses two-pass recovery:
+    1. Pass 1: fast boundary & CRC scan identifying torn tail and last valid checkpoint frame.
+    2. Pass 2: targeted replay jumping directly to the latest checkpoint (or start of file),
+       avoiding redundant decoding of historical operations superseded by the checkpoint.
     """
     t0 = time.perf_counter()
 
@@ -129,78 +227,8 @@ def recover(fd: int, file_size: int) -> RecoveryResult:
 
     generation, _ = parse_header(header_bytes)
 
-    # Step 4: Scan frames from offset 24
-    index: dict[bytes, int] = {}
-    buf = bytearray()
-    buf_start_file_offset = HEADER_SIZE
-    os.lseek(fd, HEADER_SIZE, os.SEEK_SET)
-
-    stopping_offset = HEADER_SIZE
-    scan_done = False
-
-    while not scan_done:
-        read_chunk = os.read(fd, CHUNK_SIZE)
-        if read_chunk:
-            buf.extend(read_chunk)
-
-        eof_reached = len(read_chunk) == 0
-        buf_pos = 0
-
-        # Scan frames within the current buffer
-        while True:
-            frame_file_offset = buf_start_file_offset + buf_pos
-
-            # Rule 1 check: need at least 8 bytes for length & crc
-            if buf_pos + 8 > len(buf):
-                if eof_reached:
-                    # Torn tail (fewer than 8 bytes remaining at EOF)
-                    stopping_offset = frame_file_offset
-                    scan_done = True
-                    break
-                else:
-                    # Need more bytes from disk
-                    break
-
-            frame_len = struct.unpack_from("<I", buf, buf_pos)[0]
-            needed = 8 + frame_len
-
-            if buf_pos + needed > len(buf):
-                # Frame extends past current buffer
-                if frame_file_offset + needed > file_size or eof_reached:
-                    # Frame extends past actual file EOF -> torn tail
-                    stopping_offset = frame_file_offset
-                    scan_done = True
-                    break
-                else:
-                    # Buffer needs more data from disk
-                    break
-
-            # Parse frame and check validity rules 1-8
-            # Limit in buf coordinate space is file_size - buf_start_file_offset
-            buf_file_limit = file_size - buf_start_file_offset
-            parsed_res = parse_frame(buf, buf_pos, buf_file_limit, extract_values=False)
-
-            if parsed_res is None:
-                # Frame is invalid (CRC mismatch, bad kind, etc.) -> torn tail
-                stopping_offset = frame_file_offset
-                scan_done = True
-                break
-
-            parsed_frame, next_pos = parsed_res
-            apply_ops(index, parsed_frame.ops, frame_file_offset)
-            buf_pos = next_pos
-            stopping_offset = buf_start_file_offset + buf_pos
-
-        if scan_done:
-            break
-
-        if eof_reached and buf_pos == len(buf):
-            # Cleanly parsed all frames to EOF
-            break
-
-        # Slide the buffer: keep unparsed remainder
-        buf = buf[buf_pos:]
-        buf_start_file_offset += buf_pos
+    # Step 4: Pass 1 - Scan boundaries, CRCs, and locate last valid checkpoint
+    stopping_offset, last_checkpoint_offset = _scan_boundaries(fd, file_size)
 
     # Step 5: Truncate torn tail if stopping_offset < file_size
     if stopping_offset < file_size:
@@ -208,6 +236,64 @@ def recover(fd: int, file_size: int) -> RecoveryResult:
         os.ftruncate(fd, stopping_offset)
         os.fsync(fd)
         crash_point("recovery_after_truncate")
+
+    # Step 6: Pass 2 - Replay frames into index
+    # Fast-forward directly to last_checkpoint_offset if present
+    start_offset = last_checkpoint_offset if last_checkpoint_offset is not None else HEADER_SIZE
+    index: dict[bytes, int] = {}
+
+    if start_offset < stopping_offset:
+        os.lseek(fd, start_offset, os.SEEK_SET)
+        buf = bytearray()
+        buf_start_file_offset = start_offset
+        current_file_offset = start_offset
+
+        while current_file_offset < stopping_offset:
+            if (buf_start_file_offset + len(buf)) < stopping_offset:
+                to_read = min(CHUNK_SIZE, stopping_offset - (buf_start_file_offset + len(buf)))
+                if to_read > 0:
+                    read_chunk = os.read(fd, to_read)
+                    if read_chunk:
+                        buf.extend(read_chunk)
+
+            eof_reached = (buf_start_file_offset + len(buf)) >= stopping_offset
+            buf_pos = 0
+
+            while buf_pos < len(buf) and (buf_start_file_offset + buf_pos) < stopping_offset:
+                frame_file_offset = buf_start_file_offset + buf_pos
+                if buf_pos + 8 > len(buf):
+                    break
+
+                frame_len = struct.unpack_from("<I", buf, buf_pos)[0]
+                needed = 8 + frame_len
+                if buf_pos + needed > len(buf):
+                    break
+
+                buf_file_limit = stopping_offset - buf_start_file_offset
+                parsed_res = parse_frame(
+                    buf,
+                    buf_pos,
+                    buf_file_limit,
+                    extract_values=False,
+                    target_index=index,
+                    frame_file_offset=frame_file_offset,
+                    validate_crc=False,
+                )
+                if parsed_res is None:
+                    break
+
+                parsed_frame, next_pos = parsed_res
+                buf_pos = next_pos
+                current_file_offset = buf_start_file_offset + buf_pos
+
+            if eof_reached and buf_pos == len(buf):
+                break
+
+            if buf_pos == len(buf):
+                buf.clear()
+            elif buf_pos > 0:
+                del buf[:buf_pos]
+            buf_start_file_offset += buf_pos
 
     os.lseek(fd, stopping_offset, os.SEEK_SET)
     recovery_ms = max(0, int((time.perf_counter() - t0) * 1000))
