@@ -161,10 +161,10 @@ def run_self_tests(kvdb_bin: str | None = None) -> int:
     # --------------------------------------------------------------------------
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
+        valid_bytes = build_synthetic_binary_db([("alpha", b"val1"), ("beta", b"val2")])
 
         # Test 7: Valid binary DB accepted
         try:
-            valid_bytes = build_synthetic_binary_db([("alpha", b"val1"), ("beta", b"val2")])
             f_valid = tmp_path / "valid.db"
             f_valid.write_bytes(valid_bytes)
             ok, msg = validate_raw_binary_db(f_valid, strict_magic=True)

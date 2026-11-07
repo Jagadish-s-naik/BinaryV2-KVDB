@@ -134,62 +134,66 @@ class TestServeProtocol(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        stdin = proc.stdin
+        stdout = proc.stdout
 
         try:
             # 1. Expect READY
-            ready_line = proc.stdout.readline()
+            ready_line = stdout.readline()
             self.assertTrue(ready_line.startswith(b"READY keys=0"))
 
             # 2. PUT
-            proc.stdin.write(b"PUT op1 61 31\n")
-            proc.stdin.flush()
-            res = proc.stdout.readline()
+            stdin.write(b"PUT op1 61 31\n")
+            stdin.flush()
+            res = stdout.readline()
             self.assertEqual(res, b"ACK op1\n")
 
             # 3. GET
-            proc.stdin.write(b"GET op2 61\n")
-            proc.stdin.flush()
-            res = proc.stdout.readline()
+            stdin.write(b"GET op2 61\n")
+            stdin.flush()
+            res = stdout.readline()
             self.assertEqual(res, b"VAL op2 31\n")
 
             # 4. PUT empty value ("-")
-            proc.stdin.write(b"PUT op3 62 -\n")
-            proc.stdin.flush()
-            res = proc.stdout.readline()
+            stdin.write(b"PUT op3 62 -\n")
+            stdin.flush()
+            res = stdout.readline()
             self.assertEqual(res, b"ACK op3\n")
 
             # GET empty value
-            proc.stdin.write(b"GET op4 62\n")
-            proc.stdin.flush()
-            res = proc.stdout.readline()
+            stdin.write(b"GET op4 62\n")
+            stdin.flush()
+            res = stdout.readline()
             self.assertEqual(res, b"VAL op4 -\n")
 
             # 5. DEL
-            proc.stdin.write(b"DEL op5 61\n")
-            proc.stdin.flush()
-            res = proc.stdout.readline()
+            stdin.write(b"DEL op5 61\n")
+            stdin.flush()
+            res = stdout.readline()
             self.assertEqual(res, b"ACK op5\n")
 
-            proc.stdin.write(b"GET op6 61\n")
-            proc.stdin.flush()
-            res = proc.stdout.readline()
+            stdin.write(b"GET op6 61\n")
+            stdin.flush()
+            res = stdout.readline()
             self.assertEqual(res, b"NOTFOUND op6\n")
 
             # 6. BATCH
-            proc.stdin.write(b"BATCH op7 2\nput 63 33\ndel 62\n")
-            proc.stdin.flush()
-            res = proc.stdout.readline()
+            stdin.write(b"BATCH op7 2\nput 63 33\ndel 62\n")
+            stdin.flush()
+            res = stdout.readline()
             self.assertEqual(res, b"ACK op7\n")
 
-            proc.stdin.write(b"GET op8 63\n")
-            proc.stdin.flush()
-            res = proc.stdout.readline()
+            stdin.write(b"GET op8 63\n")
+            stdin.flush()
+            res = stdout.readline()
             self.assertEqual(res, b"VAL op8 33\n")
 
             # 7. COMPACT
-            proc.stdin.write(b"COMPACT op9\n")
-            proc.stdin.flush()
-            res = proc.stdout.readline()
+            stdin.write(b"COMPACT op9\n")
+            stdin.flush()
+            res = stdout.readline()
             self.assertEqual(res, b"ACK op9\n")
 
             # 8. Pipelined requests (send batch of commands without waiting)
@@ -197,21 +201,21 @@ class TestServeProtocol(unittest.TestCase):
             for i in range(n_pipe):
                 hex_k = f"pipe_{i}".encode("ascii").hex().encode("ascii")
                 hex_v = f"val_{i}".encode("ascii").hex().encode("ascii")
-                proc.stdin.write(f"PUT p{i} ".encode("ascii") + hex_k + b" " + hex_v + b"\n")
-            proc.stdin.flush()
+                stdin.write(f"PUT p{i} ".encode("ascii") + hex_k + b" " + hex_v + b"\n")
+            stdin.flush()
 
             # Read all 40 acks (they may arrive in any order)
             received_ids = set()
             for _ in range(n_pipe):
-                line = proc.stdout.readline()
+                line = stdout.readline()
                 parts = line.strip().split(b" ")
                 self.assertEqual(parts[0], b"ACK")
                 received_ids.add(parts[1].decode("ascii"))
             self.assertEqual(len(received_ids), n_pipe)
 
             # 9. QUIT
-            proc.stdin.write(b"QUIT\n")
-            proc.stdin.flush()
+            stdin.write(b"QUIT\n")
+            stdin.flush()
 
             proc.wait(timeout=5)
             self.assertEqual(proc.returncode, 0)
